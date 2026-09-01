@@ -1,0 +1,98 @@
+import os
+import base64
+import httpx
+
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import Response
+from pydantic import BaseModel
+
+load_dotenv()
+
+app = FastAPI()
+
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
+
+
+class ImageSearchRequest(BaseModel):
+    query: str
+
+
+def find_image(obj):
+    if isinstance(obj, dict):
+        if obj.get("type") == "image":
+            data = obj.get("data")
+
+            if data:
+                return data, obj.get("mime_type", "image/jpeg")
+
+        for value in obj.values():
+            result = find_image(value)
+
+            if result:
+                return result
+
+    elif isinstance(obj, list):
+        for item in obj:
+            result = find_image(item)
+
+            if result:
+                return result
+
+    return None
+
+
+@app.post("/image-search")
+async def image_search(request: ImageSearchRequest):
+    payload = {
+        "model": "gemini-3.1-flash-image",
+        "input": f"Find a suitable image of {request.query}",
+        "tools": [
+            {
+                "type": "google_search",
+                "search_types": "image_search",
+            }
+        ],
+    }
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.post(
+            GEMINI_URL,
+            headers={
+                "x-goog-api-key": GEMINI_API_KEY,
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=response.text,
+        )
+
+    data = response.json()
+
+    image = find_image(data)
+
+    if not image:
+        raise HTTPException(
+            status_code=404,
+            detail="No image found in Gemini response",
+        )
+
+    image_data, mime_type = image
+
+    try:
+        image_bytes = base64.b64decode(image_data)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to decode image: {e}",
+        )
+
+    return Response(
+        content=image_bytes,
+        media_type=mime_type,
+    )
