@@ -7,7 +7,7 @@ load_dotenv()
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 IMAGE_SEARCH_MODEL = "gemini-3.1-flash-image"
-TEXT_MODEL = "gemini-3.1-flash"
+TEXT_MODEL = "gemini-3.5-flash"
 
 MAX_IMAGE_WIDTH = 800
 JPEG_QUALITY = 75
