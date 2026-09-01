@@ -1,11 +1,10 @@
-"""
-Entry point for the FastAPI application.
-Import the app from the app package to maintain backward compatibility with deployment configs.
+"""Compatibility entry point.
+
+The application lives in app/main.py; the canonical production target is
+``app.main:app``. This module re-exports the exact same app object so an
+existing ``uvicorn main:app`` deployment keeps working after a git pull.
 """
 
 from app.main import app
 
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+__all__ = ["app"]

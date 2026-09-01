@@ -1,0 +1,17 @@
+[Unit]
+Description=Gemini Image API (FastAPI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+# WorkingDirectory must be the project root: app/core/config.py calls load_dotenv(),
+# which reads .env relative to the process working directory.
+WorkingDirectory=/root/gemini-image-api
+ExecStart=/root/gemini-image-api/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
