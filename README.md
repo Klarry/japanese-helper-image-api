@@ -8,6 +8,7 @@ FastAPI backend serving the Android client.
 | --- | --- | --- | --- |
 | POST | `/image-search` | `{"query": "..."}` | raw JPEG bytes, `Content-Type: image/jpeg` |
 | POST | `/description` | `{"meaning": "..."}` | `{"uncontrolled": "...", "controlled": "..."}` |
+| POST | `/kanji-word-set` | `{"kanji": "...", "experimentType": "DIRECT\|STEP_BY_STEP\|PROMPT\|EXPERTS"}` | `{"prompt": "...", "words": ["..."], "cost": 0, "value": 0}` |
 
 ## Production entry point
 
@@ -65,7 +66,7 @@ main.py                       compatibility shim -> app.main:app
 app/main.py                   FastAPI() + router registration
 app/api/routes/               HTTP endpoints
 app/schemas/                  Pydantic request/response models
-app/services/                 Gemini calls, image handling, prompts
+app/services/                 Gemini calls, image handling, prompts (incl. kanji word set)
 app/core/config.py            environment and constants
 deploy/                       systemd unit
 ```
