@@ -119,11 +119,20 @@ async def search_image(query: str) -> str:
     return image_data
 
 
-async def generate_text(prompt: str) -> str:
-    payload = {
+async def generate_text(prompt: str, temperature: float | None = None) -> str:
+    """Run a text generation prompt through Gemini.
+
+    ``temperature`` is omitted from the payload when not given, so existing
+    callers that don't pass it keep getting the exact same request they
+    always have.
+    """
+    payload: dict[str, Any] = {
         "model": TEXT_MODEL,
         "input": prompt,
     }
+
+    if temperature is not None:
+        payload["temperature"] = temperature
 
     data = await _post_to_gemini(payload)
     text = _find_text(data)
