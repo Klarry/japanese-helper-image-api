@@ -6,6 +6,7 @@ from fastapi import HTTPException
 
 from app.core.config import (
     GEMINI_API_KEY,
+    GEMINI_GENERATE_CONTENT_URL_TEMPLATE,
     GEMINI_URL,
     HTTP_TIMEOUT,
     IMAGE_SEARCH_MODEL,
@@ -15,13 +16,10 @@ from app.core.config import (
 logger = logging.getLogger(__name__)
 
 
-async def _post_to_gemini(payload: dict[str, Any]) -> dict[str, Any]:
-    model = payload.get("model")
-    logger.info("Calling Gemini model=%s", model)
-
+async def _post(url: str, payload: dict[str, Any]) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
         response = await client.post(
-            GEMINI_URL,
+            url,
             headers={
                 "x-goog-api-key": GEMINI_API_KEY,
                 "Content-Type": "application/json",
@@ -34,8 +32,8 @@ async def _post_to_gemini(payload: dict[str, Any]) -> dict[str, Any]:
         # this ever surfaces server-side, and it's what actually explains a
         # pass-through error like a 400 (e.g. an unsupported payload field).
         logger.error(
-            "Gemini model=%s returned status %s: %s",
-            model,
+            "Gemini POST %s returned status %s: %s",
+            url,
             response.status_code,
             response.text,
         )
@@ -45,6 +43,11 @@ async def _post_to_gemini(payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     return response.json()
+
+
+async def _post_to_gemini(payload: dict[str, Any]) -> dict[str, Any]:
+    logger.info("Calling Gemini model=%s", payload.get("model"))
+    return await _post(GEMINI_URL, payload)
 
 
 def _find_image(obj: Any) -> str | None:
@@ -130,19 +133,24 @@ async def search_image(query: str) -> str:
 async def generate_text(prompt: str, temperature: float | None = None) -> str:
     """Run a text generation prompt through Gemini.
 
-    ``temperature`` is omitted from the payload when not given, so existing
-    callers that don't pass it keep getting the exact same request they
-    always have.
+    When ``temperature`` is omitted, this is the exact same Interactions API
+    request every existing caller always got. When it's given, the request
+    goes to the classic generateContent endpoint instead: the Interactions
+    API has no temperature parameter at all (confirmed by Google's docs and
+    by the API itself - "Unknown parameter 'temperature'"), while
+    generateContent supports it via ``generationConfig.temperature``.
     """
-    payload: dict[str, Any] = {
-        "model": TEXT_MODEL,
-        "input": prompt,
-    }
+    if temperature is None:
+        data = await _post_to_gemini({"model": TEXT_MODEL, "input": prompt})
+    else:
+        url = GEMINI_GENERATE_CONTENT_URL_TEMPLATE.format(model=TEXT_MODEL)
+        logger.info("Calling Gemini model=%s temperature=%s", TEXT_MODEL, temperature)
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": temperature},
+        }
+        data = await _post(url, payload)
 
-    if temperature is not None:
-        payload["temperature"] = temperature
-
-    data = await _post_to_gemini(payload)
     text = _find_text(data)
 
     if not text:
