@@ -30,7 +30,15 @@ async def _post_to_gemini(payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     if response.status_code != 200:
-        logger.error("Gemini model=%s returned status %s", model, response.status_code)
+        # Log the response body too, not just the status - it's the only place
+        # this ever surfaces server-side, and it's what actually explains a
+        # pass-through error like a 400 (e.g. an unsupported payload field).
+        logger.error(
+            "Gemini model=%s returned status %s: %s",
+            model,
+            response.status_code,
+            response.text,
+        )
         raise HTTPException(
             status_code=response.status_code,
             detail=response.text,
