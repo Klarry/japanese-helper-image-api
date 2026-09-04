@@ -1,5 +1,5 @@
 import logging
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 from fastapi import HTTPException
@@ -104,6 +104,50 @@ def _find_text(obj: Any) -> str | None:
     return None
 
 
+# Where each API surface reports token usage. Only these documented fields are
+# read - anything else stays None rather than being guessed at.
+_USAGE_FIELDS = (
+    # Interactions API
+    ("usage", "total_input_tokens", "total_output_tokens"),
+    # generateContent API
+    ("usageMetadata", "promptTokenCount", "candidatesTokenCount"),
+)
+
+
+def _as_token_count(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+
+    return int(value)
+
+
+def _find_token_usage(obj: Any) -> tuple[int | None, int | None]:
+    if isinstance(obj, dict):
+        for container, input_field, output_field in _USAGE_FIELDS:
+            block = obj.get(container)
+
+            if isinstance(block, dict):
+                return (
+                    _as_token_count(block.get(input_field)),
+                    _as_token_count(block.get(output_field)),
+                )
+
+        for value in obj.values():
+            found = _find_token_usage(value)
+
+            if found != (None, None):
+                return found
+
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _find_token_usage(item)
+
+            if found != (None, None):
+                return found
+
+    return None, None
+
+
 async def search_image(query: str) -> str:
     """Run a Gemini image search and return the base64 payload of the image."""
     payload = {
@@ -130,7 +174,15 @@ async def search_image(query: str) -> str:
     return image_data
 
 
-async def generate_text(prompt: str, temperature: float | None = None) -> str:
+class GeneratedText(NamedTuple):
+    """A generation result. Token counts are ``None`` when Gemini didn't report them."""
+
+    text: str
+    input_tokens: int | None
+    output_tokens: int | None
+
+
+async def _generate(prompt: str, temperature: float | None, model: str) -> GeneratedText:
     """Run a text generation prompt through Gemini.
 
     When ``temperature`` is omitted, this is the exact same Interactions API
@@ -141,10 +193,10 @@ async def generate_text(prompt: str, temperature: float | None = None) -> str:
     generateContent supports it via ``generationConfig.temperature``.
     """
     if temperature is None:
-        data = await _post_to_gemini({"model": TEXT_MODEL, "input": prompt})
+        data = await _post_to_gemini({"model": model, "input": prompt})
     else:
-        url = GEMINI_GENERATE_CONTENT_URL_TEMPLATE.format(model=TEXT_MODEL)
-        logger.info("Calling Gemini model=%s temperature=%s", TEXT_MODEL, temperature)
+        url = GEMINI_GENERATE_CONTENT_URL_TEMPLATE.format(model=model)
+        logger.info("Calling Gemini model=%s temperature=%s", model, temperature)
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": temperature},
@@ -160,4 +212,26 @@ async def generate_text(prompt: str, temperature: float | None = None) -> str:
             detail="No text found in Gemini response",
         )
 
-    return text.strip()
+    input_tokens, output_tokens = _find_token_usage(data)
+
+    return GeneratedText(text.strip(), input_tokens, output_tokens)
+
+
+async def generate_text(
+    prompt: str,
+    temperature: float | None = None,
+    model: str = TEXT_MODEL,
+) -> str:
+    """Generate text with Gemini. Defaults to [TEXT_MODEL], so existing
+    callers keep sending exactly the request they always have.
+    """
+    return (await _generate(prompt, temperature, model)).text
+
+
+async def generate_text_with_usage(
+    prompt: str,
+    model: str = TEXT_MODEL,
+    temperature: float | None = None,
+) -> GeneratedText:
+    """Same call as [generate_text], but also reports Gemini's token usage."""
+    return await _generate(prompt, temperature, model)
