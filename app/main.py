@@ -3,6 +3,7 @@ import logging
 from fastapi import FastAPI
 
 from app.api.routes import (
+    agent,
     description,
     image_search,
     kanji_word_set,
@@ -20,3 +21,4 @@ app.include_router(description.router)
 app.include_router(kanji_word_set.router)
 app.include_router(temperature_description.router)
 app.include_router(model_comparison.router)
+app.include_router(agent.router)
