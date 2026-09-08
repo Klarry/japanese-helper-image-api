@@ -22,3 +22,8 @@ JPEG_QUALITY = 75
 
 HTTP_TIMEOUT = 120.0
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+# Where the Japanese Learning Agent's conversation history is persisted -
+# a single JSON file, relative to the working directory (same convention
+# as .env above). Overridable so tests can point it at a throwaway path.
+AGENT_HISTORY_FILE_PATH = os.getenv("AGENT_HISTORY_FILE_PATH", "data/agent_history.json")
