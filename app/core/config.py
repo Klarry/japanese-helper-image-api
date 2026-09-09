@@ -14,6 +14,12 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 GEMINI_GENERATE_CONTENT_URL_TEMPLATE = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 )
+# Gemini's own tokenizer, exposed as a plain REST call - used to get a real
+# (not estimated) token count for an arbitrary piece of text, such as the
+# agent's conversation history alone.
+GEMINI_COUNT_TOKENS_URL_TEMPLATE = (
+    "https://generativelanguage.googleapis.com/v1beta/models/{model}:countTokens"
+)
 IMAGE_SEARCH_MODEL = "gemini-3.1-flash-image"
 TEXT_MODEL = "gemini-3.5-flash"
 

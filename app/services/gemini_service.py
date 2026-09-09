@@ -6,6 +6,7 @@ from fastapi import HTTPException
 
 from app.core.config import (
     GEMINI_API_KEY,
+    GEMINI_COUNT_TOKENS_URL_TEMPLATE,
     GEMINI_GENERATE_CONTENT_URL_TEMPLATE,
     GEMINI_URL,
     HTTP_TIMEOUT,
@@ -235,3 +236,24 @@ async def generate_text_with_usage(
 ) -> GeneratedText:
     """Same call as [generate_text], but also reports Gemini's token usage."""
     return await _generate(prompt, temperature, model)
+
+
+async def count_tokens(text: str, model: str = TEXT_MODEL) -> int:
+    """Ask Gemini's own tokenizer how many tokens ``text`` is.
+
+    A real, model-specific count via the API's :countTokens endpoint - not a
+    word/character estimate. Callers that just want "zero" for empty text
+    should short-circuit before calling this; it always makes a request.
+    """
+    url = GEMINI_COUNT_TOKENS_URL_TEMPLATE.format(model=model)
+    data = await _post(url, {"contents": [{"parts": [{"text": text}]}]})
+    total_tokens = data.get("totalTokens")
+
+    if not isinstance(total_tokens, int):
+        logger.warning("No totalTokens found in Gemini countTokens response")
+        raise HTTPException(
+            status_code=502,
+            detail="No token count found in Gemini response",
+        )
+
+    return total_tokens

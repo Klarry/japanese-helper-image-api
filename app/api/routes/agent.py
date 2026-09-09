@@ -8,8 +8,7 @@ router = APIRouter()
 
 @router.post("/agent/chat")
 async def agent_chat(request: AgentChatRequest) -> AgentChatResponse:
-    response_text = await agent.run(request.message)
-    return AgentChatResponse(response=response_text)
+    return await agent.run(request.message)
 
 
 @router.get("/agent/history")

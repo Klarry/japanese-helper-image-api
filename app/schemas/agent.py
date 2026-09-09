@@ -15,8 +15,21 @@ class AgentChatRequest(BaseModel):
         return stripped
 
 
+class AgentTokenUsage(BaseModel):
+    """Real token counts from Gemini for one /agent/chat call. A field is
+    ``None`` only when Gemini didn't report the underlying number for that
+    call - never an estimate standing in for a missing real value.
+    """
+
+    current_request_tokens: int | None = None
+    history_tokens: int | None = None
+    response_tokens: int | None = None
+    total_tokens: int | None = None
+
+
 class AgentChatResponse(BaseModel):
     response: str
+    usage: AgentTokenUsage
 
 
 class AgentHistoryMessage(BaseModel):

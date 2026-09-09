@@ -1,5 +1,8 @@
 import asyncio
 
+import pytest
+from fastapi import HTTPException
+
 from app.services import gemini_service
 
 
@@ -153,3 +156,58 @@ def test_generate_text_with_usage_returns_none_when_usage_is_absent(monkeypatch)
 
     assert generated.input_tokens is None
     assert generated.output_tokens is None
+
+
+def test_count_tokens_returns_the_real_total_from_gemini(monkeypatch):
+    captured = {}
+
+    async def fake_post(url, payload):
+        captured["url"] = url
+        captured["payload"] = payload
+        return {"totalTokens": 123}
+
+    monkeypatch.setattr(gemini_service, "_post", fake_post)
+
+    total = asyncio.run(gemini_service.count_tokens("some conversation history"))
+
+    assert total == 123
+    assert captured["url"].endswith(f"/models/{gemini_service.TEXT_MODEL}:countTokens")
+    assert captured["payload"] == {
+        "contents": [{"parts": [{"text": "some conversation history"}]}]
+    }
+
+
+def test_count_tokens_propagates_an_explicit_model(monkeypatch):
+    captured = {}
+
+    async def fake_post(url, payload):
+        captured["url"] = url
+        return {"totalTokens": 5}
+
+    monkeypatch.setattr(gemini_service, "_post", fake_post)
+
+    asyncio.run(gemini_service.count_tokens("text", model="some-other-model"))
+
+    assert captured["url"].endswith("/models/some-other-model:countTokens")
+
+
+def test_count_tokens_raises_when_gemini_reports_no_total(monkeypatch):
+    async def fake_post(url, payload):
+        return {}
+
+    monkeypatch.setattr(gemini_service, "_post", fake_post)
+
+    with pytest.raises(HTTPException):
+        asyncio.run(gemini_service.count_tokens("text"))
+
+
+def test_count_tokens_propagates_gemini_errors(monkeypatch):
+    async def failing_post(url, payload):
+        raise HTTPException(status_code=400, detail="input token count exceeds the maximum")
+
+    monkeypatch.setattr(gemini_service, "_post", failing_post)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(gemini_service.count_tokens("very long text"))
+
+    assert exc_info.value.status_code == 400
