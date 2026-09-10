@@ -75,6 +75,12 @@ compare.
   Gemini call. `AGENT_RECENT_MESSAGES_KEPT` and
   `AGENT_SUMMARY_UPDATE_THRESHOLD` override those two numbers.
 
+A client can pick the mode per request instead: `POST /agent/chat` accepts an
+optional `compression_enabled` boolean, and the env flag is only the fallback
+for requests that leave it out. The response carries a `compression` block
+(`enabled`, `summary_tokens`, `recent_messages`) describing what the agent is
+now keeping, which is what the Android screen shows next to the token usage.
+
 The summary and the recent messages are persisted together in
 `data/agent_history.json`, so a restart resumes the conversation either way,
 and `GET /agent/history` returns both.

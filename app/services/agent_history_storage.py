@@ -43,6 +43,10 @@ class ConversationHistory:
 
     summary: str = ""
     messages: list[HistoryMessage] = field(default_factory=list)
+    # How many tokens the stored summary is, as reported by Gemini when it
+    # wrote it - kept so the size can be shown without re-counting it on
+    # every turn. None means "not known", never an estimate.
+    summary_tokens: int | None = None
 
 
 def format_transcript(messages: list[HistoryMessage]) -> str:
@@ -92,14 +96,27 @@ class AgentHistoryStorage:
             logger.warning("Agent history at %s has a malformed summary; ignoring it", self._path)
             summary = ""
 
-        return ConversationHistory(summary=summary, messages=messages)
+        summary_tokens = data.get("summary_tokens")
+
+        if not isinstance(summary_tokens, int) or isinstance(summary_tokens, bool):
+            summary_tokens = None
+
+        return ConversationHistory(
+            summary=summary,
+            messages=messages,
+            summary_tokens=summary_tokens,
+        )
 
     def save(self, history: ConversationHistory) -> None:
         """Persist the summary and the messages, overwriting what was there."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(
             json.dumps(
-                {"summary": history.summary, "messages": history.messages},
+                {
+                    "summary": history.summary,
+                    "summary_tokens": history.summary_tokens,
+                    "messages": history.messages,
+                },
                 ensure_ascii=False,
                 indent=2,
             ),

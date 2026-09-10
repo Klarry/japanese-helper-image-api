@@ -638,3 +638,76 @@ def test_a_failure_to_record_usage_does_not_fail_the_turn(monkeypatch, tmp_path)
 
     assert result.response == "answer"
     assert len(agent.get_history().messages) == 2
+
+
+# --- the mode can be chosen per request ------------------------------------
+
+
+def _compressed_dialogue(monkeypatch, agent, turns=8, compression_enabled=None):
+    _stub_generate(monkeypatch, _numbered_answers())
+    _stub_count_tokens(monkeypatch, lambda text: len(text))
+    _stub_summary(monkeypatch, lambda prompt: _generated(text="сводка", output_tokens=42))
+
+    return [
+        asyncio.run(agent.run(f"question {index}", compression_enabled))
+        for index in range(turns)
+    ]
+
+
+def test_a_request_can_ask_for_compression_the_agent_is_not_configured_for(monkeypatch, tmp_path):
+    """The client states the mode; the configured default is the fallback."""
+    agent = _agent(tmp_path)  # configured off
+
+    _compressed_dialogue(monkeypatch, agent, compression_enabled=True)
+
+    assert agent.get_history().summary == "сводка"
+    assert len(agent.get_history().messages) == 6
+
+
+def test_a_request_can_opt_out_of_compression_the_agent_is_configured_for(monkeypatch, tmp_path):
+    agent = _compressing_agent(tmp_path)  # configured on
+
+    _compressed_dialogue(monkeypatch, agent, compression_enabled=False)
+
+    assert agent.get_history().summary == ""
+    assert len(agent.get_history().messages) == 16
+
+
+def test_a_request_that_states_no_mode_uses_the_configured_one(monkeypatch, tmp_path):
+    agent = _compressing_agent(tmp_path)
+
+    _compressed_dialogue(monkeypatch, agent, compression_enabled=None)
+
+    assert agent.get_history().summary == "сводка"
+
+
+def test_the_response_reports_the_mode_and_what_is_being_kept(monkeypatch, tmp_path):
+    results = _compressed_dialogue(monkeypatch, _agent(tmp_path), compression_enabled=True)
+    status = results[-1].compression
+
+    assert status.enabled is True
+    assert status.summary_tokens == 42
+    assert status.recent_messages == 6
+
+
+def test_the_status_reports_no_summary_when_compression_is_off(monkeypatch, tmp_path):
+    results = _compressed_dialogue(monkeypatch, _agent(tmp_path), turns=3, compression_enabled=False)
+    status = results[-1].compression
+
+    assert status.enabled is False
+    assert status.summary_tokens == 0
+    assert status.recent_messages == 6
+
+
+def test_the_summarys_token_count_survives_a_restart(monkeypatch, tmp_path):
+    _compressed_dialogue(monkeypatch, _compressing_agent(tmp_path))
+
+    assert _compressing_agent(tmp_path).get_history().summary_tokens == 42
+
+
+def test_the_usage_log_records_the_mode_the_request_asked_for(monkeypatch, tmp_path):
+    agent = _agent(tmp_path)
+
+    _compressed_dialogue(monkeypatch, agent, turns=1, compression_enabled=True)
+
+    assert agent.get_usage()[0]["compression_enabled"] is True

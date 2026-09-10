@@ -2,7 +2,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.schemas.agent import AgentChatResponse, AgentTokenUsage
+from app.schemas.agent import AgentChatResponse, AgentCompressionStatus, AgentTokenUsage
 from app.services import agent_history_compressor as compressor_module
 from app.services import japanese_learning_agent as agent_module
 from app.services.agent_history_storage import AgentHistoryStorage
@@ -77,11 +77,12 @@ def test_agent_chat_delegates_to_the_agent(monkeypatch, tmp_path):
     _isolate_agent(monkeypatch, tmp_path)
     calls = []
 
-    async def fake_run(self, message):
-        calls.append(message)
+    async def fake_run(self, message, compression_enabled=None):
+        calls.append((message, compression_enabled))
         return AgentChatResponse(
             response="answer from the agent",
             usage=AgentTokenUsage(),
+            compression=AgentCompressionStatus(),
         )
 
     monkeypatch.setattr(JapaneseLearningAgent, "run", fake_run)
@@ -90,7 +91,27 @@ def test_agent_chat_delegates_to_the_agent(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert response.json()["response"] == "answer from the agent"
-    assert calls == ["Explain 学."]
+    # No mode in the request means "use however the server is configured".
+    assert calls == [("Explain 学.", None)]
+
+
+def test_agent_chat_passes_the_requested_mode_to_the_agent(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    calls = []
+
+    async def fake_run(self, message, compression_enabled=None):
+        calls.append((message, compression_enabled))
+        return AgentChatResponse(
+            response="answer",
+            usage=AgentTokenUsage(),
+            compression=AgentCompressionStatus(),
+        )
+
+    monkeypatch.setattr(JapaneseLearningAgent, "run", fake_run)
+
+    client.post("/agent/chat", json={"message": "Explain 学.", "compression_enabled": True})
+
+    assert calls == [("Explain 学.", True)]
 
 
 def test_agent_chat_rejects_an_empty_message():
@@ -315,3 +336,85 @@ def test_usage_entries_record_the_mode_they_were_produced_in(monkeypatch, tmp_pa
     assert entries[0]["compression_enabled"] is True
     assert entries[0]["history_tokens"] == 0
     assert entries[0]["timestamp"]
+
+
+# --- choosing the mode per request -----------------------------------------
+
+
+def test_a_request_can_turn_compression_on_for_a_server_that_defaults_to_off(monkeypatch, tmp_path):
+    """How the Android toggle works: the client states the mode, the server
+    default is only the fallback."""
+    _isolate_agent(monkeypatch, tmp_path, compression_enabled=False)
+    _mock_generate(monkeypatch, "answer")
+    _mock_count_tokens(monkeypatch, 120)
+    _mock_summary(monkeypatch, "Разбирали 学習 и 勉強.")
+
+    for index in range(8):
+        client.post("/agent/chat", json={"message": f"question {index}", "compression_enabled": True})
+
+    body = client.get("/agent/history").json()
+
+    assert body["summary"] == "Разбирали 学習 и 勉強."
+    assert len(body["messages"]) == 6
+
+
+def test_a_request_can_turn_compression_off_for_a_server_that_defaults_to_on(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path, compression_enabled=True)
+    _mock_generate(monkeypatch, "answer")
+    _mock_count_tokens(monkeypatch, 120)
+    _mock_summary(monkeypatch, "сводка")
+
+    for index in range(8):
+        client.post("/agent/chat", json={"message": f"question {index}", "compression_enabled": False})
+
+    body = client.get("/agent/history").json()
+
+    assert body["summary"] == ""
+    assert len(body["messages"]) == 16
+
+
+def test_the_response_reports_the_compression_status(monkeypatch, tmp_path):
+    """What the screen shows under the token usage: the mode, the summary's
+    real size, and how many messages are kept word for word."""
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "answer")
+    _mock_count_tokens(monkeypatch, 120)
+    _mock_summary(monkeypatch, "Разбирали 学習 и 勉強.")
+
+    for index in range(8):
+        response = client.post(
+            "/agent/chat",
+            json={"message": f"question {index}", "compression_enabled": True},
+        )
+
+    assert response.json()["compression"] == {
+        "enabled": True,
+        "summary_tokens": 20,
+        "recent_messages": 6,
+    }
+
+
+def test_the_status_reports_no_summary_while_compression_is_off(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "answer")
+
+    response = client.post("/agent/chat", json={"message": "Explain 学.", "compression_enabled": False})
+
+    assert response.json()["compression"] == {
+        "enabled": False,
+        "summary_tokens": 0,
+        "recent_messages": 2,
+    }
+
+
+def test_the_usage_log_records_the_mode_the_request_asked_for(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path, compression_enabled=False)
+    _mock_generate(monkeypatch, "answer")
+    _mock_count_tokens(monkeypatch, 25)
+
+    client.post("/agent/chat", json={"message": "off please", "compression_enabled": False})
+    client.post("/agent/chat", json={"message": "on please", "compression_enabled": True})
+
+    entries = client.get("/agent/usage").json()["entries"]
+
+    assert [entry["compression_enabled"] for entry in entries] == [False, True]

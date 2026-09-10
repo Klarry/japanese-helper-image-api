@@ -13,7 +13,7 @@ router = APIRouter()
 
 @router.post("/agent/chat")
 async def agent_chat(request: AgentChatRequest) -> AgentChatResponse:
-    return await agent.run(request.message)
+    return await agent.run(request.message, request.compression_enabled)
 
 
 @router.get("/agent/history")

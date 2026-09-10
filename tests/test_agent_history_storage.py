@@ -97,7 +97,7 @@ def test_the_summary_is_stored_separately_from_the_messages(tmp_path):
 
     written = json.loads(path.read_text(encoding="utf-8"))
 
-    assert written == {"summary": "Разбирали 学習.", "messages": recent}
+    assert written == {"summary": "Разбирали 学習.", "summary_tokens": None, "messages": recent}
 
 
 def test_save_then_load_round_trips_the_summary(tmp_path):
@@ -138,6 +138,31 @@ def test_clear_removes_the_summary_too(tmp_path):
     storage.clear()
 
     assert storage.load() == ConversationHistory()
+
+
+def test_the_summarys_own_token_count_round_trips(tmp_path):
+    """It is shown next to the token usage, so it has to survive with the
+    summary rather than be recounted on every turn."""
+    storage = _storage(tmp_path)
+    conversation = ConversationHistory(summary="Разбирали 学習.", messages=[], summary_tokens=1245)
+
+    storage.save(conversation)
+
+    assert storage.load().summary_tokens == 1245
+
+
+def test_a_history_file_without_a_summary_token_count_loads_it_as_unknown(tmp_path):
+    path = tmp_path / "history.json"
+    path.write_text(json.dumps({"summary": "s", "messages": []}), encoding="utf-8")
+
+    assert AgentHistoryStorage(file_path=str(path)).load().summary_tokens is None
+
+
+def test_a_malformed_summary_token_count_is_ignored(tmp_path):
+    path = tmp_path / "history.json"
+    path.write_text(json.dumps({"summary": "s", "summary_tokens": "many", "messages": []}), encoding="utf-8")
+
+    assert AgentHistoryStorage(file_path=str(path)).load().summary_tokens is None
 
 
 def test_the_summary_survives_a_new_storage_instance(tmp_path):

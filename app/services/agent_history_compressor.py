@@ -51,6 +51,10 @@ class CompressionResult(NamedTuple):
     summary: str
     messages: list[HistoryMessage]
     tokens_used: int
+    # The generated summary's own size, straight from Gemini's output-token
+    # count for the rewrite - a real number, and free, since the rewrite
+    # reports it anyway.
+    summary_tokens: int | None
 
 
 class HistoryCompressor:
@@ -88,6 +92,7 @@ class HistoryCompressor:
             summary=generated.text,
             messages=recent,
             tokens_used=(generated.input_tokens or 0) + (generated.output_tokens or 0),
+            summary_tokens=generated.output_tokens,
         )
 
     @staticmethod

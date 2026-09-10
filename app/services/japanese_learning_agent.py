@@ -13,7 +13,7 @@ import logging
 from datetime import datetime, timezone
 
 from app.core.config import AGENT_COMPRESSION_ENABLED
-from app.schemas.agent import AgentChatResponse, AgentTokenUsage
+from app.schemas.agent import AgentChatResponse, AgentCompressionStatus, AgentTokenUsage
 from app.services.agent_history_compressor import HistoryCompressor
 from app.services.agent_history_storage import (
     AgentHistoryStorage,
@@ -82,7 +82,12 @@ class JapaneseLearningAgent:
         self._compressor = compressor or HistoryCompressor()
         self._compression_enabled = compression_enabled
 
-    async def run(self, message: str) -> AgentChatResponse:
+    async def run(self, message: str, compression_enabled: bool | None = None) -> AgentChatResponse:
+        """Answer one message. ``compression_enabled`` lets the caller pick
+        the mode for this request - that is what makes running the same
+        dialogue both ways possible from the client. Omitted, it falls back
+        to how the server is configured."""
+        use_compression = self._compression_enabled if compression_enabled is None else compression_enabled
         history = self._history.load()
         history_prefix = self._build_history_prefix(history)
         prompt = self._build_prompt(message, history_prefix)
@@ -103,12 +108,16 @@ class JapaneseLearningAgent:
 
         history.messages.append({"role": "user", "content": message})
         history.messages.append({"role": "assistant", "content": generated.text})
-        summarization_tokens = await self._compress_if_due(history)
+        summarization_tokens = await self._compress_if_due(history, use_compression)
         self._history.save(history)
 
-        self._record_usage(usage, messages_sent, summary_used, summarization_tokens)
+        self._record_usage(usage, use_compression, messages_sent, summary_used, summarization_tokens)
 
-        return AgentChatResponse(response=generated.text, usage=usage)
+        return AgentChatResponse(
+            response=generated.text,
+            usage=usage,
+            compression=self._build_compression_status(use_compression, history),
+        )
 
     def get_history(self) -> ConversationHistory:
         return self._history.load()
@@ -119,7 +128,7 @@ class JapaneseLearningAgent:
     def get_usage(self) -> list[UsageRecord]:
         return self._usage_log.load()
 
-    async def _compress_if_due(self, history: ConversationHistory) -> int:
+    async def _compress_if_due(self, history: ConversationHistory, use_compression: bool) -> int:
         """Fold aged-out messages into the summary once enough have piled up.
 
         Best-effort, like counting tokens: the learner's turn has already
@@ -128,7 +137,7 @@ class JapaneseLearningAgent:
         an error for an answer that was perfectly fine. Nothing is dropped
         in the meantime - the messages simply stay verbatim a while longer.
         """
-        if not self._compression_enabled or not self._compressor.needs_compression(history.messages):
+        if not use_compression or not self._compressor.needs_compression(history.messages):
             return 0
 
         try:
@@ -139,12 +148,27 @@ class JapaneseLearningAgent:
 
         history.summary = result.summary
         history.messages = result.messages
+        history.summary_tokens = result.summary_tokens
 
         return result.tokens_used
+
+    @staticmethod
+    def _build_compression_status(
+        use_compression: bool,
+        history: ConversationHistory,
+    ) -> AgentCompressionStatus:
+        """The conversation as it now stands - what the next request will
+        send, and what the numbers above it were produced with."""
+        return AgentCompressionStatus(
+            enabled=use_compression,
+            summary_tokens=history.summary_tokens if history.summary else 0,
+            recent_messages=len(history.messages),
+        )
 
     def _record_usage(
         self,
         usage: AgentTokenUsage,
+        use_compression: bool,
         messages_sent: int,
         summary_used: bool,
         summarization_tokens: int,
@@ -154,7 +178,7 @@ class JapaneseLearningAgent:
         failure here must never sink an answer the learner already has."""
         record: UsageRecord = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "compression_enabled": self._compression_enabled,
+            "compression_enabled": use_compression,
             "messages_sent": messages_sent,
             "summary_used": summary_used,
             "current_request_tokens": usage.current_request_tokens,

@@ -140,6 +140,16 @@ def test_compression_reports_what_the_rewrite_itself_cost(monkeypatch):
     assert result.tokens_used == 490
 
 
+def test_compression_reports_how_big_the_new_summary_is(monkeypatch):
+    """The rewrite's output-token count is the summary's own size - a real
+    number that comes back with the call, so nothing has to be recounted."""
+    _stub_summary(monkeypatch, lambda prompt: _generated(input_tokens=400, output_tokens=90))
+
+    result = asyncio.run(_compressor().compress("", _messages(16)))
+
+    assert result.summary_tokens == 90
+
+
 def test_unreported_token_counts_are_treated_as_zero_cost(monkeypatch):
     _stub_summary(monkeypatch, lambda prompt: _generated(input_tokens=None, output_tokens=None))
 

@@ -3,6 +3,10 @@ from pydantic import BaseModel, field_validator
 
 class AgentChatRequest(BaseModel):
     message: str
+    # Which mode to answer in. Omitted means "whatever the server is
+    # configured for" (AGENT_COMPRESSION_ENABLED), so existing clients that
+    # know nothing about compression keep working unchanged.
+    compression_enabled: bool | None = None
 
     @field_validator("message")
     @classmethod
@@ -27,9 +31,22 @@ class AgentTokenUsage(BaseModel):
     total_tokens: int | None = None
 
 
+class AgentCompressionStatus(BaseModel):
+    """What the agent is now keeping for this conversation, so a client can
+    show the mode next to the token usage it produced. ``summary_tokens`` is
+    the real size of the stored summary (zero when there is none, null when
+    Gemini did not report it), and ``recent_messages`` is how many messages
+    are still kept word for word."""
+
+    enabled: bool = False
+    summary_tokens: int | None = None
+    recent_messages: int = 0
+
+
 class AgentChatResponse(BaseModel):
     response: str
     usage: AgentTokenUsage
+    compression: AgentCompressionStatus
 
 
 class AgentHistoryMessage(BaseModel):
