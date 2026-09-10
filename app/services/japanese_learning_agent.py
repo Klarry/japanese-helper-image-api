@@ -101,9 +101,10 @@ class JapaneseLearningAgent:
 
         history_tokens = await self._count_history_tokens(history_prefix)
         usage = self._build_usage(generated.input_tokens, generated.output_tokens, history_tokens)
-        # What this request actually sent, captured before the new turn is
-        # appended and before any summarising rearranges it.
-        messages_sent = len(history.messages)
+        # What this request actually sent - captured before the new turn is
+        # appended and before any summarising rearranges it, so the status
+        # and the token counts describe the same request.
+        sent_context = self._build_compression_status(use_compression, history)
         summary_used = bool(history.summary)
 
         history.messages.append({"role": "user", "content": message})
@@ -111,12 +112,12 @@ class JapaneseLearningAgent:
         summarization_tokens = await self._compress_if_due(history, use_compression)
         self._history.save(history)
 
-        self._record_usage(usage, use_compression, messages_sent, summary_used, summarization_tokens)
+        self._record_usage(usage, sent_context, summary_used, summarization_tokens)
 
         return AgentChatResponse(
             response=generated.text,
             usage=usage,
-            compression=self._build_compression_status(use_compression, history),
+            compression=sent_context,
         )
 
     def get_history(self) -> ConversationHistory:
@@ -157,19 +158,20 @@ class JapaneseLearningAgent:
         use_compression: bool,
         history: ConversationHistory,
     ) -> AgentCompressionStatus:
-        """The conversation as it now stands - what the next request will
-        send, and what the numbers above it were produced with."""
+        """The context this request is about to send: the stored summary, if
+        there is one, and the messages that go with it word for word. Call it
+        before the new turn is appended - afterwards it would describe the
+        next request instead of this one."""
         return AgentCompressionStatus(
             enabled=use_compression,
             summary_tokens=history.summary_tokens if history.summary else 0,
-            recent_messages=len(history.messages),
+            messages_sent=len(history.messages),
         )
 
     def _record_usage(
         self,
         usage: AgentTokenUsage,
-        use_compression: bool,
-        messages_sent: int,
+        sent_context: AgentCompressionStatus,
         summary_used: bool,
         summarization_tokens: int,
     ) -> None:
@@ -178,8 +180,8 @@ class JapaneseLearningAgent:
         failure here must never sink an answer the learner already has."""
         record: UsageRecord = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "compression_enabled": use_compression,
-            "messages_sent": messages_sent,
+            "compression_enabled": sent_context.enabled,
+            "messages_sent": sent_context.messages_sent,
             "summary_used": summary_used,
             "current_request_tokens": usage.current_request_tokens,
             "history_tokens": usage.history_tokens,

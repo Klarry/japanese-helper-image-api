@@ -381,7 +381,7 @@ def test_the_response_reports_the_compression_status(monkeypatch, tmp_path):
     _mock_count_tokens(monkeypatch, 120)
     _mock_summary(monkeypatch, "Разбирали 学習 и 勉強.")
 
-    for index in range(8):
+    for index in range(9):
         response = client.post(
             "/agent/chat",
             json={"message": f"question {index}", "compression_enabled": True},
@@ -390,7 +390,7 @@ def test_the_response_reports_the_compression_status(monkeypatch, tmp_path):
     assert response.json()["compression"] == {
         "enabled": True,
         "summary_tokens": 20,
-        "recent_messages": 6,
+        "messages_sent": 6,
     }
 
 
@@ -400,10 +400,11 @@ def test_the_status_reports_no_summary_while_compression_is_off(monkeypatch, tmp
 
     response = client.post("/agent/chat", json={"message": "Explain 学.", "compression_enabled": False})
 
+    # Nothing had been said yet, so nothing but the message itself was sent.
     assert response.json()["compression"] == {
         "enabled": False,
         "summary_tokens": 0,
-        "recent_messages": 2,
+        "messages_sent": 0,
     }
 
 

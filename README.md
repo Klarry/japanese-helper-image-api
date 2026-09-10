@@ -78,8 +78,20 @@ compare.
 A client can pick the mode per request instead: `POST /agent/chat` accepts an
 optional `compression_enabled` boolean, and the env flag is only the fallback
 for requests that leave it out. The response carries a `compression` block
-(`enabled`, `summary_tokens`, `recent_messages`) describing what the agent is
-now keeping, which is what the Android screen shows next to the token usage.
+(`enabled`, `summary_tokens`, `messages_sent`) describing the context that
+request sent - the summary that went with it, if any, and how many messages
+went along word for word. It deliberately describes the request rather than
+the conversation as it stands afterwards: on the turn that folds older
+messages away, the tokens were still spent sending them, so the status and the
+usage beside it always refer to the same request. The Android screen shows the
+two together.
+
+Note what this means for a short experiment: with the defaults, the first
+summary is only written once sixteen messages exist - the eighth turn - and
+the saving shows from the ninth. A dialogue shorter than that sends the same
+context in both modes, and the status says so (`summary_tokens: 0`). Lower
+`AGENT_SUMMARY_UPDATE_THRESHOLD` and `AGENT_RECENT_MESSAGES_KEPT` to see it
+sooner.
 
 The summary and the recent messages are persisted together in
 `data/agent_history.json`, so a restart resumes the conversation either way,

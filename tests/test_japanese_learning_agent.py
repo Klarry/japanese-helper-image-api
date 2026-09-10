@@ -681,13 +681,15 @@ def test_a_request_that_states_no_mode_uses_the_configured_one(monkeypatch, tmp_
     assert agent.get_history().summary == "сводка"
 
 
-def test_the_response_reports_the_mode_and_what_is_being_kept(monkeypatch, tmp_path):
-    results = _compressed_dialogue(monkeypatch, _agent(tmp_path), compression_enabled=True)
+def test_the_response_reports_the_context_that_request_sent(monkeypatch, tmp_path):
+    """By the ninth turn the summary written on the eighth is doing the work:
+    it goes out with the six messages kept word for word."""
+    results = _compressed_dialogue(monkeypatch, _agent(tmp_path), turns=9, compression_enabled=True)
     status = results[-1].compression
 
     assert status.enabled is True
     assert status.summary_tokens == 42
-    assert status.recent_messages == 6
+    assert status.messages_sent == 6
 
 
 def test_the_status_reports_no_summary_when_compression_is_off(monkeypatch, tmp_path):
@@ -696,7 +698,34 @@ def test_the_status_reports_no_summary_when_compression_is_off(monkeypatch, tmp_
 
     assert status.enabled is False
     assert status.summary_tokens == 0
-    assert status.recent_messages == 6
+    # Two turns had been stored when the third was sent.
+    assert status.messages_sent == 4
+
+
+def test_the_status_describes_the_request_not_the_conversation_after_it(monkeypatch, tmp_path):
+    """The eighth turn is the one that folds ten messages away. Its tokens
+    were still spent sending all fourteen, so that is what the status says -
+    reporting the six that survived would contradict the count beside it."""
+    agent = _agent(tmp_path)
+
+    results = _compressed_dialogue(monkeypatch, agent, turns=8, compression_enabled=True)
+    status = results[-1].compression
+
+    assert status.summary_tokens == 0
+    assert status.messages_sent == 14
+    # The stored conversation really did shrink - the status just isn't about that.
+    assert len(agent.get_history().messages) == 6
+    assert agent.get_history().summary == "сводка"
+
+
+def test_the_status_and_the_usage_record_describe_the_same_request(monkeypatch, tmp_path):
+    agent = _agent(tmp_path)
+
+    results = _compressed_dialogue(monkeypatch, agent, turns=9, compression_enabled=True)
+
+    for result, record in zip(results, agent.get_usage()):
+        assert result.compression.messages_sent == record["messages_sent"]
+        assert result.compression.enabled == record["compression_enabled"]
 
 
 def test_the_summarys_token_count_survives_a_restart(monkeypatch, tmp_path):

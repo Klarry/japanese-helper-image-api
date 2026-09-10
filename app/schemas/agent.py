@@ -32,15 +32,20 @@ class AgentTokenUsage(BaseModel):
 
 
 class AgentCompressionStatus(BaseModel):
-    """What the agent is now keeping for this conversation, so a client can
-    show the mode next to the token usage it produced. ``summary_tokens`` is
-    the real size of the stored summary (zero when there is none, null when
-    Gemini did not report it), and ``recent_messages`` is how many messages
-    are still kept word for word."""
+    """What this request actually sent, so a client can show it next to the
+    token usage the same request produced. ``summary_tokens`` is the real
+    size of the summary that went with it (zero when none did, null when
+    Gemini never reported that summary's size), and ``messages_sent`` is how
+    many messages went along word for word.
+
+    It describes the request, not the conversation as it stands afterwards:
+    on the turn where older messages are folded away, the tokens above were
+    still spent on sending them, and a status claiming otherwise would
+    contradict its own numbers."""
 
     enabled: bool = False
     summary_tokens: int | None = None
-    recent_messages: int = 0
+    messages_sent: int = 0
 
 
 class AgentChatResponse(BaseModel):
