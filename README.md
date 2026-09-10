@@ -53,11 +53,36 @@ sudo systemctl restart gemini-image-api
 
 ```
 GEMINI_API_KEY=...
-LOG_LEVEL=INFO        # optional, defaults to INFO
+LOG_LEVEL=INFO                    # optional, defaults to INFO
+AGENT_COMPRESSION_ENABLED=false   # optional, defaults to false
 ```
 
 `GEMINI_API_KEY` is read server-side only, in `app/core/config.py`, and is never
 returned to a client or written to logs.
+
+### Agent history compression
+
+`AGENT_COMPRESSION_ENABLED` decides how much of the conversation `/agent/chat`
+sends to Gemini. It is a flag rather than a request field because it exists to
+be measured: run a dialogue with it off, run the same dialogue with it on, and
+compare.
+
+* `false` (default) - the whole conversation is sent on every turn, exactly as
+  the agent has always worked. The prompt grows with the dialogue.
+* `true` - only a running summary plus the messages still kept verbatim are
+  sent. The newest 6 messages are always kept as they are; once 10 messages
+  have aged out past that window they are folded into the summary by one extra
+  Gemini call. `AGENT_RECENT_MESSAGES_KEPT` and
+  `AGENT_SUMMARY_UPDATE_THRESHOLD` override those two numbers.
+
+The summary and the recent messages are persisted together in
+`data/agent_history.json`, so a restart resumes the conversation either way,
+and `GET /agent/history` returns both.
+
+Every request's token usage is appended to `data/agent_token_usage.json`
+(`AGENT_USAGE_LOG_FILE_PATH`) and is readable through `GET /agent/usage`. Each
+record carries the flag it was produced under, and what the summarising itself
+cost, so neither side of the comparison hides anything.
 
 ## Layout
 

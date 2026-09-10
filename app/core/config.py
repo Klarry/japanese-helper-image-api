@@ -33,3 +33,24 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 # a single JSON file, relative to the working directory (same convention
 # as .env above). Overridable so tests can point it at a throwaway path.
 AGENT_HISTORY_FILE_PATH = os.getenv("AGENT_HISTORY_FILE_PATH", "data/agent_history.json")
+
+# --- Agent history compression (Day 7 experiment) --------------------------
+# Off by default: with the flag unset the agent behaves exactly as it did
+# before - the whole conversation is sent to Gemini on every turn. Turning it
+# on is what the experiment compares against, so it is a plain env flag
+# rather than something baked into the request contract.
+AGENT_COMPRESSION_ENABLED = os.getenv("AGENT_COMPRESSION_ENABLED", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+# How many of the newest messages are always kept verbatim, and how many
+# messages have to age out past that window before the summary is rewritten.
+# Summarising costs a Gemini call, so it happens in batches rather than on
+# every turn.
+AGENT_RECENT_MESSAGES_KEPT = int(os.getenv("AGENT_RECENT_MESSAGES_KEPT", "6"))
+AGENT_SUMMARY_UPDATE_THRESHOLD = int(os.getenv("AGENT_SUMMARY_UPDATE_THRESHOLD", "10"))
+# One record per /agent/chat call, so token spend with and without
+# compression can be compared after the fact.
+AGENT_USAGE_LOG_FILE_PATH = os.getenv("AGENT_USAGE_LOG_FILE_PATH", "data/agent_token_usage.json")

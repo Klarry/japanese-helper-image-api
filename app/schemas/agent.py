@@ -38,4 +38,29 @@ class AgentHistoryMessage(BaseModel):
 
 
 class AgentHistoryResponse(BaseModel):
+    """The stored conversation. ``summary`` covers the older messages that
+    compression has already folded away; it is always empty while
+    compression is off, and clients that only read ``messages`` are
+    unaffected either way."""
+
     messages: list[AgentHistoryMessage]
+    summary: str = ""
+
+
+class AgentUsageEntry(BaseModel):
+    """One recorded /agent/chat call. Every field has a default so a record
+    written by an older version of the app still reads back cleanly."""
+
+    timestamp: str = ""
+    compression_enabled: bool = False
+    messages_sent: int = 0
+    summary_used: bool = False
+    current_request_tokens: int | None = None
+    history_tokens: int | None = None
+    response_tokens: int | None = None
+    total_tokens: int | None = None
+    summarization_tokens: int = 0
+
+
+class AgentUsageResponse(BaseModel):
+    entries: list[AgentUsageEntry]
