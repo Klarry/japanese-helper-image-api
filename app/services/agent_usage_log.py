@@ -25,6 +25,7 @@ class UsageRecord(TypedDict):
     did not report them, never an estimate standing in for a real value."""
 
     timestamp: str
+    strategy: str
     compression_enabled: bool
     messages_sent: int
     summary_used: bool
@@ -33,6 +34,7 @@ class UsageRecord(TypedDict):
     response_tokens: int | None
     total_tokens: int | None
     summarization_tokens: int
+    facts_tokens: int
 
 
 class AgentUsageLog:

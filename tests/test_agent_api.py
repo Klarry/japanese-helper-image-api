@@ -2,7 +2,13 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.schemas.agent import AgentChatResponse, AgentCompressionStatus, AgentTokenUsage
+from app.schemas.agent import (
+    AgentChatResponse,
+    AgentCompressionStatus,
+    AgentTokenUsage,
+    ContextStrategy,
+)
+from app.services import agent_facts_extractor as facts_module
 from app.services import agent_history_compressor as compressor_module
 from app.services import japanese_learning_agent as agent_module
 from app.services.agent_history_storage import AgentHistoryStorage
@@ -77,8 +83,8 @@ def test_agent_chat_delegates_to_the_agent(monkeypatch, tmp_path):
     _isolate_agent(monkeypatch, tmp_path)
     calls = []
 
-    async def fake_run(self, message, compression_enabled=None):
-        calls.append((message, compression_enabled))
+    async def fake_run(self, message, compression_enabled=None, strategy=None):
+        calls.append((message, compression_enabled, strategy))
         return AgentChatResponse(
             response="answer from the agent",
             usage=AgentTokenUsage(),
@@ -91,16 +97,16 @@ def test_agent_chat_delegates_to_the_agent(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert response.json()["response"] == "answer from the agent"
-    # No mode in the request means "use however the server is configured".
-    assert calls == [("Explain 学.", None)]
+    # Nothing in the request means "use however the server is configured".
+    assert calls == [("Explain 学.", None, None)]
 
 
 def test_agent_chat_passes_the_requested_mode_to_the_agent(monkeypatch, tmp_path):
     _isolate_agent(monkeypatch, tmp_path)
     calls = []
 
-    async def fake_run(self, message, compression_enabled=None):
-        calls.append((message, compression_enabled))
+    async def fake_run(self, message, compression_enabled=None, strategy=None):
+        calls.append((message, compression_enabled, strategy))
         return AgentChatResponse(
             response="answer",
             usage=AgentTokenUsage(),
@@ -110,8 +116,12 @@ def test_agent_chat_passes_the_requested_mode_to_the_agent(monkeypatch, tmp_path
     monkeypatch.setattr(JapaneseLearningAgent, "run", fake_run)
 
     client.post("/agent/chat", json={"message": "Explain 学.", "compression_enabled": True})
+    client.post("/agent/chat", json={"message": "Explain 学.", "strategy": "sliding_window"})
 
-    assert calls == [("Explain 学.", True)]
+    assert calls == [
+        ("Explain 学.", True, None),
+        ("Explain 学.", None, ContextStrategy.SLIDING_WINDOW),
+    ]
 
 
 def test_agent_chat_rejects_an_empty_message():
@@ -419,3 +429,239 @@ def test_the_usage_log_records_the_mode_the_request_asked_for(monkeypatch, tmp_p
     entries = client.get("/agent/usage").json()["entries"]
 
     assert [entry["compression_enabled"] for entry in entries] == [False, True]
+
+
+# --- choosing a strategy ---------------------------------------------------
+
+
+def _mock_facts(monkeypatch, facts_json: str):
+    async def fake_generate_text_with_usage(prompt, model=None, temperature=None):
+        return GeneratedText(text=facts_json, input_tokens=200, output_tokens=30)
+
+    monkeypatch.setattr(facts_module, "generate_text_with_usage", fake_generate_text_with_usage)
+
+
+def test_the_strategy_can_be_chosen_and_read_back(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+
+    response = client.put("/agent/strategy", json={"strategy": "sliding_window"})
+
+    assert response.status_code == 200
+    assert response.json() == {"strategy": "sliding_window"}
+    assert client.get("/agent/context").json()["strategy"] == "sliding_window"
+
+
+def test_an_unknown_strategy_is_rejected(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+
+    assert client.put("/agent/strategy", json={"strategy": "telepathy"}).status_code == 422
+
+
+def test_the_chosen_strategy_answers_later_chats(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "answer")
+    _mock_count_tokens(monkeypatch, 120)
+    client.put("/agent/strategy", json={"strategy": "sliding_window"})
+
+    response = client.post("/agent/chat", json={"message": "вопрос"})
+
+    assert response.json()["strategy"] == "sliding_window"
+
+
+def test_a_chat_can_name_the_strategy_for_that_request_only(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "answer")
+    _mock_count_tokens(monkeypatch, 120)
+    client.put("/agent/strategy", json={"strategy": "sliding_window"})
+
+    response = client.post("/agent/chat", json={"message": "вопрос", "strategy": "full"})
+
+    assert response.json()["strategy"] == "full"
+    assert client.get("/agent/context").json()["strategy"] == "sliding_window"
+
+
+# --- GET /agent/context ----------------------------------------------------
+
+
+def test_context_is_empty_before_anything_is_said(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+
+    body = client.get("/agent/context").json()
+
+    assert body["branch"] == "main"
+    assert body["branches"] == ["main"]
+    assert body["checkpoints"] == []
+    assert body["messages"] == []
+    assert body["context"] == ""
+
+
+def test_context_reports_what_the_next_request_would_send(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "answer")
+    _mock_count_tokens(monkeypatch, 120)
+    client.put("/agent/strategy", json={"strategy": "sliding_window"})
+
+    for index in range(10):
+        client.post("/agent/chat", json={"message": f"question {index}"})
+
+    body = client.get("/agent/context").json()
+
+    assert len(body["messages"]) == 6
+    assert "question 9" in body["context"]
+    assert "question 0" not in body["context"]
+
+
+def test_context_reports_the_sticky_facts(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "answer")
+    _mock_count_tokens(monkeypatch, 120)
+    _mock_facts(monkeypatch, '{"goal": "сдать N3"}')
+    client.put("/agent/strategy", json={"strategy": "sticky_facts"})
+
+    client.post("/agent/chat", json={"message": "Хочу сдать N3."})
+    body = client.get("/agent/context").json()
+
+    assert body["facts"] == {"goal": "сдать N3"}
+    assert "goal: сдать N3" in body["context"]
+
+
+# --- checkpoints and branches ----------------------------------------------
+
+
+def _say(message: str):
+    assert client.post("/agent/chat", json={"message": message}).status_code == 200
+
+
+def test_a_checkpoint_can_be_taken_without_naming_it(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "answer")
+    _mock_count_tokens(monkeypatch, 120)
+    _say("общий вопрос")
+
+    response = client.post("/agent/checkpoint")
+
+    assert response.status_code == 200
+    assert response.json() == {"name": "cp-1", "branch": "main", "messages": 2}
+
+
+def test_two_branches_forked_from_one_checkpoint_stay_apart(monkeypatch, tmp_path):
+    """The whole branching scenario through the API."""
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "answer")
+    _mock_count_tokens(monkeypatch, 120)
+    _say("общий вопрос")
+    client.post("/agent/checkpoint", json={"name": "fork"})
+
+    assert client.post("/agent/branch", json={"name": "formal", "checkpoint": "fork"}).status_code == 200
+    assert client.post("/agent/branch", json={"name": "casual", "checkpoint": "fork"}).status_code == 200
+
+    client.put("/agent/branch", json={"name": "formal"})
+    _say("формальный вопрос")
+    client.put("/agent/branch", json={"name": "casual"})
+    _say("разговорный вопрос")
+
+    client.put("/agent/branch", json={"name": "formal"})
+    formal = client.get("/agent/context").json()
+    client.put("/agent/branch", json={"name": "casual"})
+    casual = client.get("/agent/context").json()
+
+    assert formal["branch"] == "formal"
+    assert "формальный вопрос" in formal["context"]
+    assert "разговорный вопрос" not in formal["context"]
+    assert casual["branch"] == "casual"
+    assert "разговорный вопрос" in casual["context"]
+    assert "формальный вопрос" not in casual["context"]
+    assert casual["branches"] == ["casual", "formal", "main"]
+
+
+def test_creating_a_branch_leaves_the_current_one_alone(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "answer")
+    _mock_count_tokens(monkeypatch, 120)
+    _say("общий вопрос")
+    client.post("/agent/checkpoint", json={"name": "fork"})
+
+    body = client.post("/agent/branch", json={"name": "formal", "checkpoint": "fork"}).json()
+
+    assert body == {"branch": "main", "branches": ["formal", "main"]}
+
+
+def test_forking_from_a_checkpoint_that_does_not_exist_is_reported(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+
+    response = client.post("/agent/branch", json={"name": "formal", "checkpoint": "nope"})
+
+    assert response.status_code == 404
+
+
+def test_reusing_a_branch_name_is_reported(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    client.post("/agent/checkpoint", json={"name": "fork"})
+    client.post("/agent/branch", json={"name": "formal", "checkpoint": "fork"})
+
+    response = client.post("/agent/branch", json={"name": "formal", "checkpoint": "fork"})
+
+    assert response.status_code == 409
+
+
+def test_switching_to_a_branch_that_does_not_exist_is_reported(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+
+    assert client.put("/agent/branch", json={"name": "nope"}).status_code == 404
+
+
+def test_history_follows_the_branch_that_was_switched_to(monkeypatch, tmp_path):
+    """GET /agent/history keeps meaning the current conversation - which is
+    now the current branch's."""
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "answer")
+    _mock_count_tokens(monkeypatch, 120)
+    _say("общий вопрос")
+    client.post("/agent/checkpoint", json={"name": "fork"})
+    client.post("/agent/branch", json={"name": "side", "checkpoint": "fork"})
+    client.put("/agent/branch", json={"name": "side"})
+    _say("вопрос в ветке")
+
+    side = [entry["content"] for entry in client.get("/agent/history").json()["messages"]]
+    client.put("/agent/branch", json={"name": "main"})
+    main = [entry["content"] for entry in client.get("/agent/history").json()["messages"]]
+
+    assert "вопрос в ветке" in side
+    assert "вопрос в ветке" not in main
+
+
+def test_branches_survive_a_fresh_storage_instance(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "answer")
+    _mock_count_tokens(monkeypatch, 120)
+    _say("общий вопрос")
+    client.post("/agent/checkpoint", json={"name": "fork"})
+    client.post("/agent/branch", json={"name": "side", "checkpoint": "fork"})
+    client.put("/agent/branch", json={"name": "side"})
+
+    monkeypatch.setattr(
+        agent_module.agent,
+        "_history",
+        AgentHistoryStorage(file_path=str(tmp_path / "history.json")),
+    )
+    body = client.get("/agent/context").json()
+
+    assert body["branch"] == "side"
+    assert body["branches"] == ["main", "side"]
+    assert body["checkpoints"] == ["fork"]
+
+
+# --- comparing the strategies ----------------------------------------------
+
+
+def test_usage_entries_say_which_strategy_produced_them(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "answer", input_tokens=40, output_tokens=8)
+    _mock_count_tokens(monkeypatch, 25)
+
+    client.post("/agent/chat", json={"message": "вопрос", "strategy": "full"})
+    client.post("/agent/chat", json={"message": "вопрос", "strategy": "sliding_window"})
+
+    entries = client.get("/agent/usage").json()["entries"]
+
+    assert [entry["strategy"] for entry in entries] == ["full", "sliding_window"]

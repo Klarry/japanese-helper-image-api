@@ -93,6 +93,50 @@ context in both modes, and the status says so (`summary_tokens: 0`). Lower
 `AGENT_SUMMARY_UPDATE_THRESHOLD` and `AGENT_RECENT_MESSAGES_KEPT` to see it
 sooner.
 
+### Context strategies
+
+`PUT /agent/strategy` chooses how much of the conversation the next requests
+send. The choice is persisted with the conversation, so it survives a restart.
+A single request can override it with a `strategy` field; a client that sends
+neither still falls back to the compression flag above, so nothing that
+existed before this needs to change.
+
+| strategy | what it puts in front of the model |
+| --- | --- |
+| `full` | the whole conversation - the baseline |
+| `summary` | the running summary plus the messages still kept verbatim |
+| `sliding_window` | only the newest `AGENT_RECENT_MESSAGES_KEPT` (6) messages |
+| `sticky_facts` | a key-value memory of goals, constraints, preferences and decisions, plus that same window |
+| `branching` | the current branch's whole conversation |
+
+The last three never read or write a summary. `sliding_window` and
+`sticky_facts` window the *context*, not the file: older messages stay on disk
+so the same dialogue can be replayed under another strategy, but they are not
+sent. `sticky_facts` refreshes its memory from every learner message with one
+extra Gemini call, recorded separately as `facts_tokens` so the strategy's own
+cost is visible next to what it saves.
+
+### Branches and checkpoints
+
+Branches exist under every strategy; `branching` is simply the strategy for
+when the point is which branch is being talked on.
+
+- `POST /agent/checkpoint` captures the current branch as it stands. It stores
+  the conversation itself rather than a position in it, so a strategy that
+  rewrites or shortens the branch afterwards cannot move the checkpoint.
+- `POST /agent/branch` forks a branch from a checkpoint and deliberately does
+  not switch to it - which is what makes forking a second branch from the same
+  checkpoint straightforward. Two branches forked from one checkpoint start
+  identical and then never touch each other.
+- `PUT /agent/branch` switches. Each branch owns its messages and its facts,
+  and `GET /agent/history` always means the branch being talked on.
+- `GET /agent/context` returns exactly what the next request would send - built
+  by the same code that builds the real prompt - plus the strategy, the current
+  branch, and the branches and checkpoints available.
+
+Branches, checkpoints, facts and the chosen strategy all live in
+`data/agent_history.json` and come back after a restart.
+
 The summary and the recent messages are persisted together in
 `data/agent_history.json`, so a restart resumes the conversation either way,
 and `GET /agent/history` returns both.

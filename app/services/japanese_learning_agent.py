@@ -1,24 +1,38 @@
-"""Day 6-7: a small, dedicated LLM agent for the Japanese-learning app.
+"""Day 6-8: a small, dedicated LLM agent for the Japanese-learning app.
 
 Every other module in this package is a bare async function that calls
 gemini_service directly. JapaneseLearningAgent is different on purpose: the
-task asks for a real agent entity that owns the whole request -> history ->
+task asks for a real agent entity that owns the whole request -> context ->
 prompt -> Gemini call -> history update -> response path for open-ended
-learner questions, so /agent/chat never does more than `await agent.run(...)`
-(and, for the other endpoints, `agent.get_history()`, `agent.clear_history()`
-and `agent.get_usage()`).
+learner questions, so the routes never do more than call one of its methods.
 """
 
 import logging
+from copy import deepcopy
 from datetime import datetime, timezone
 
-from app.core.config import AGENT_COMPRESSION_ENABLED
-from app.schemas.agent import AgentChatResponse, AgentCompressionStatus, AgentTokenUsage
+from fastapi import HTTPException
+
+from app.core.config import AGENT_COMPRESSION_ENABLED, AGENT_RECENT_MESSAGES_KEPT
+from app.schemas.agent import (
+    AgentBranchResponse,
+    AgentChatResponse,
+    AgentCheckpointResponse,
+    AgentCompressionStatus,
+    AgentContextResponse,
+    AgentHistoryMessage,
+    AgentStrategyResponse,
+    AgentTokenUsage,
+    ContextStrategy,
+)
+from app.services.agent_context import ContextWindow, build_context
+from app.services.agent_facts_extractor import FactsExtractor
 from app.services.agent_history_compressor import HistoryCompressor
 from app.services.agent_history_storage import (
     AgentHistoryStorage,
+    Checkpoint,
     ConversationHistory,
-    format_transcript,
+    ConversationState,
     storage,
 )
 from app.services.agent_usage_log import AgentUsageLog, UsageRecord, usage_log
@@ -40,34 +54,40 @@ _INSTRUCTIONS = (
 class JapaneseLearningAgent:
     """Owns the whole conversation, not just a single turn.
 
-    `run` loads the persisted conversation, builds a Gemini prompt that
-    includes it, asks Gemini, and - only once Gemini actually answers -
-    appends both the learner's message and the answer to the history and
-    saves it. A failed Gemini call raises straight through and nothing is
-    persisted: that keeps the file free of orphaned user turns with no
-    reply, which would otherwise misrepresent the conversation to the next
-    prompt.
+    `run` loads the persisted conversation, builds a Gemini prompt from
+    whichever strategy is active, asks Gemini, and - only once Gemini
+    actually answers - appends both the learner's message and the answer to
+    the current branch and saves it. A failed Gemini call raises straight
+    through and nothing is persisted: that keeps the file free of orphaned
+    user turns with no reply, which would otherwise misrepresent the
+    conversation to the next prompt.
 
-    Context sent to Gemini, in either of the two modes:
+    The strategies differ only in what they put in front of the model
+    (see agent_context.build_context, which is the single place that decides
+    it); the conversation itself is stored the same way for all of them:
 
-    * compression off (the default) - the entire conversation, every turn,
-      exactly as this agent has always worked. Simple, and the baseline the
-      experiment measures against; the prompt grows without bound.
-    * compression on - the running summary plus the messages still kept
-      verbatim. Messages age out of that window into the summary in batches
-      (see HistoryCompressor), so what is sent stays bounded instead of
-      growing with every turn.
+    * ``full`` - the whole conversation, every turn. The baseline.
+    * ``summary`` - the running summary plus the messages still stored
+      verbatim (HistoryCompressor).
+    * ``sliding_window`` - only the newest few messages. Older ones stay on
+      disk, so the same dialogue can still be replayed under another
+      strategy, but they never reach the model.
+    * ``sticky_facts`` - a key-value memory of goals, constraints,
+      preferences and decisions, plus that same window. No summary.
+    * ``branching`` - the current branch's whole conversation. Checkpoints
+      and branches are available under every strategy; this one exists for
+      when the point of the experiment is which branch is being talked on.
 
     Token usage: Gemini's generateContent/Interactions response reports one
-    combined prompt-token count for everything sent (instructions + history
-    + the new message), not a breakdown. To report history tokens and
-    current-request tokens separately, the history portion of the prompt is
+    combined prompt-token count for everything sent (instructions + context
+    + the new message), not a breakdown. To report context tokens and
+    current-request tokens separately, the context portion of the prompt is
     measured on its own via Gemini's :countTokens endpoint (a real count,
     not an estimate), and current-request tokens is the remainder of the
     real total. Because it measures what was actually sent, it is also the
-    number the compression experiment turns on. Measuring is best-effort:
-    if it fails, the chat answer is still returned - only the usage numbers
-    that depend on it come back as null.
+    number the strategy comparison turns on. Measuring is best-effort: if it
+    fails, the chat answer is still returned - only the usage numbers that
+    depend on it come back as null.
     """
 
     def __init__(
@@ -75,21 +95,29 @@ class JapaneseLearningAgent:
         history_storage: AgentHistoryStorage = storage,
         usage_log: AgentUsageLog = usage_log,
         compressor: HistoryCompressor | None = None,
+        facts_extractor: FactsExtractor | None = None,
         compression_enabled: bool = AGENT_COMPRESSION_ENABLED,
+        recent_messages_kept: int = AGENT_RECENT_MESSAGES_KEPT,
     ) -> None:
         self._history = history_storage
         self._usage_log = usage_log
         self._compressor = compressor or HistoryCompressor()
+        self._facts = facts_extractor or FactsExtractor()
         self._compression_enabled = compression_enabled
+        self._recent_kept = recent_messages_kept
 
-    async def run(self, message: str, compression_enabled: bool | None = None) -> AgentChatResponse:
-        """Answer one message. ``compression_enabled`` lets the caller pick
-        the mode for this request - that is what makes running the same
-        dialogue both ways possible from the client. Omitted, it falls back
-        to how the server is configured."""
-        use_compression = self._compression_enabled if compression_enabled is None else compression_enabled
-        history = self._history.load()
-        history_prefix = self._build_history_prefix(history)
+    async def run(
+        self,
+        message: str,
+        compression_enabled: bool | None = None,
+        strategy: ContextStrategy | None = None,
+    ) -> AgentChatResponse:
+        """Answer one message on the current branch with the active strategy."""
+        state = self._history.load()
+        active = self._resolve_strategy(state, strategy, compression_enabled)
+        history = state.current()
+        window = build_context(active, history, self._recent_kept)
+        history_prefix = self._build_history_prefix(window)
         prompt = self._build_prompt(message, history_prefix)
 
         # Let a Gemini failure here (including "context window exceeded")
@@ -102,34 +130,170 @@ class JapaneseLearningAgent:
         history_tokens = await self._count_history_tokens(history_prefix)
         usage = self._build_usage(generated.input_tokens, generated.output_tokens, history_tokens)
         # What this request actually sent - captured before the new turn is
-        # appended and before any summarising rearranges it, so the status
-        # and the token counts describe the same request.
-        sent_context = self._build_compression_status(use_compression, history)
-        summary_used = bool(history.summary)
+        # appended and before any summarising or fact-keeping rearranges it,
+        # so the status and the token counts describe the same request.
+        sent_context = AgentCompressionStatus(
+            enabled=active is ContextStrategy.SUMMARY,
+            summary_tokens=window.summary_tokens,
+            messages_sent=len(window.messages),
+        )
+        summary_used = active is ContextStrategy.SUMMARY and bool(history.summary)
 
         history.messages.append({"role": "user", "content": message})
         history.messages.append({"role": "assistant", "content": generated.text})
-        summarization_tokens = await self._compress_if_due(history, use_compression)
-        self._history.save(history)
+        summarization_tokens = await self._compress_if_due(history, active)
+        facts_tokens = await self._refresh_facts(history, message, active)
+        self._history.save(state)
 
-        self._record_usage(usage, sent_context, summary_used, summarization_tokens)
+        self._record_usage(usage, active, sent_context, summary_used, summarization_tokens, facts_tokens)
 
         return AgentChatResponse(
             response=generated.text,
             usage=usage,
             compression=sent_context,
+            strategy=active.value,
         )
 
+    # --- conversation ------------------------------------------------------
+
     def get_history(self) -> ConversationHistory:
-        return self._history.load()
+        """The current branch's stored conversation."""
+        return self._history.load().current()
 
     def clear_history(self) -> None:
-        self._history.clear()
+        """Empty the conversation - every branch and checkpoint - while
+        keeping the chosen strategy, which is a setting, not a message."""
+        state = self._history.load()
+        self._history.save(ConversationState(strategy=state.strategy))
 
     def get_usage(self) -> list[UsageRecord]:
         return self._usage_log.load()
 
-    async def _compress_if_due(self, history: ConversationHistory, use_compression: bool) -> int:
+    # --- strategy and context ---------------------------------------------
+
+    def set_strategy(self, strategy: ContextStrategy) -> AgentStrategyResponse:
+        """Choose the strategy for the conversation. Persisted with it, so it
+        survives a restart like everything else here."""
+        state = self._history.load()
+        state.strategy = strategy.value
+        self._history.save(state)
+
+        return AgentStrategyResponse(strategy=strategy.value)
+
+    def get_context(self) -> AgentContextResponse:
+        """What the next request would put in front of the model, built by
+        the same code that builds the real prompt."""
+        state = self._history.load()
+        active = self._resolve_strategy(state, None, None)
+        window = build_context(active, state.current(), self._recent_kept)
+
+        return AgentContextResponse(
+            strategy=active.value,
+            branch=state.current_branch,
+            branches=sorted(state.branches),
+            checkpoints=sorted(state.checkpoints),
+            facts=window.facts,
+            messages=[
+                AgentHistoryMessage(role=entry["role"], content=entry["content"])
+                for entry in window.messages
+            ],
+            context=self._build_history_prefix(window),
+        )
+
+    # --- checkpoints and branches -----------------------------------------
+
+    def create_checkpoint(self, name: str | None = None) -> AgentCheckpointResponse:
+        """Capture the current branch as it stands, so branches can be forked
+        from this exact point later."""
+        state = self._history.load()
+        history = state.current()
+        checkpoint_name = self._require_name(name) if name is not None else self._next_checkpoint_name(state)
+
+        if checkpoint_name in state.checkpoints:
+            raise HTTPException(status_code=409, detail=f"Checkpoint '{checkpoint_name}' already exists")
+
+        state.checkpoints[checkpoint_name] = Checkpoint(
+            branch=state.current_branch,
+            history=deepcopy(history),
+        )
+        self._history.save(state)
+
+        return AgentCheckpointResponse(
+            name=checkpoint_name,
+            branch=state.current_branch,
+            messages=len(history.messages),
+        )
+
+    def create_branch(self, name: str, checkpoint: str) -> AgentBranchResponse:
+        """Fork a branch from a checkpoint.
+
+        The branch starts as a copy of what the checkpoint captured, so two
+        branches forked from the same one start identical and then never
+        touch each other again. Creating a branch deliberately does not
+        switch to it - that is what makes forking a second one from the same
+        checkpoint straightforward.
+        """
+        state = self._history.load()
+        branch_name = self._require_name(name)
+
+        if branch_name in state.branches:
+            raise HTTPException(status_code=409, detail=f"Branch '{branch_name}' already exists")
+
+        saved = state.checkpoints.get(self._require_name(checkpoint))
+
+        if saved is None:
+            raise HTTPException(status_code=404, detail=f"Checkpoint '{checkpoint}' does not exist")
+
+        state.branches[branch_name] = deepcopy(saved.history)
+        self._history.save(state)
+
+        return self._branch_response(state)
+
+    def switch_branch(self, name: str) -> AgentBranchResponse:
+        """Talk on another branch. Its own messages and facts come back with
+        it; nothing from the branch being left behind comes along."""
+        state = self._history.load()
+        branch_name = self._require_name(name)
+
+        if branch_name not in state.branches:
+            raise HTTPException(status_code=404, detail=f"Branch '{branch_name}' does not exist")
+
+        state.current_branch = branch_name
+        self._history.save(state)
+
+        return self._branch_response(state)
+
+    # --- internals ---------------------------------------------------------
+
+    def _resolve_strategy(
+        self,
+        state: ConversationState,
+        requested: ContextStrategy | None,
+        compression_enabled: bool | None,
+    ) -> ContextStrategy:
+        """Which strategy answers this request.
+
+        A strategy named in the request wins, because steering a single
+        request is what makes an experiment possible. Otherwise the one
+        chosen through PUT /agent/strategy and persisted with the
+        conversation. Only when there is neither does the older compression
+        flag decide, which is what keeps clients that know nothing about
+        strategies working exactly as they did.
+        """
+        if requested is not None:
+            return requested
+
+        if state.strategy:
+            try:
+                return ContextStrategy(state.strategy)
+            except ValueError:
+                logger.warning("Stored agent strategy %r is unknown; ignoring it", state.strategy)
+
+        use_compression = self._compression_enabled if compression_enabled is None else compression_enabled
+
+        return ContextStrategy.SUMMARY if use_compression else ContextStrategy.FULL
+
+    async def _compress_if_due(self, history: ConversationHistory, strategy: ContextStrategy) -> int:
         """Fold aged-out messages into the summary once enough have piled up.
 
         Best-effort, like counting tokens: the learner's turn has already
@@ -138,7 +302,7 @@ class JapaneseLearningAgent:
         an error for an answer that was perfectly fine. Nothing is dropped
         in the meantime - the messages simply stay verbatim a while longer.
         """
-        if not use_compression or not self._compressor.needs_compression(history.messages):
+        if strategy is not ContextStrategy.SUMMARY or not self._compressor.needs_compression(history.messages):
             return 0
 
         try:
@@ -153,33 +317,45 @@ class JapaneseLearningAgent:
 
         return result.tokens_used
 
-    @staticmethod
-    def _build_compression_status(
-        use_compression: bool,
+    async def _refresh_facts(
+        self,
         history: ConversationHistory,
-    ) -> AgentCompressionStatus:
-        """The context this request is about to send: the stored summary, if
-        there is one, and the messages that go with it word for word. Call it
-        before the new turn is appended - afterwards it would describe the
-        next request instead of this one."""
-        return AgentCompressionStatus(
-            enabled=use_compression,
-            summary_tokens=history.summary_tokens if history.summary else 0,
-            messages_sent=len(history.messages),
-        )
+        message: str,
+        strategy: ContextStrategy,
+    ) -> int:
+        """Sticky Facts keeps its key-value memory current after every
+        learner message. Best-effort for the same reason as summarising: a
+        failed update leaves the previous facts in place and is retried on
+        the next message rather than failing an answer that already worked.
+        """
+        if strategy is not ContextStrategy.STICKY_FACTS:
+            return 0
+
+        try:
+            update = await self._facts.update(history.facts, message)
+        except Exception as error:  # noqa: BLE001 - see docstring
+            logger.warning("Could not update agent facts: %s", error)
+            return 0
+
+        history.facts = update.facts
+
+        return update.tokens_used
 
     def _record_usage(
         self,
         usage: AgentTokenUsage,
+        strategy: ContextStrategy,
         sent_context: AgentCompressionStatus,
         summary_used: bool,
         summarization_tokens: int,
+        facts_tokens: int,
     ) -> None:
-        """Persist what this request cost, so runs with and without
-        compression can be compared afterwards. Instrumentation only - a
+        """Persist what this request cost and which strategy produced it, so
+        the strategies can be compared afterwards. Instrumentation only - a
         failure here must never sink an answer the learner already has."""
         record: UsageRecord = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "strategy": strategy.value,
             "compression_enabled": sent_context.enabled,
             "messages_sent": sent_context.messages_sent,
             "summary_used": summary_used,
@@ -188,12 +364,35 @@ class JapaneseLearningAgent:
             "response_tokens": usage.response_tokens,
             "total_tokens": usage.total_tokens,
             "summarization_tokens": summarization_tokens,
+            "facts_tokens": facts_tokens,
         }
 
         try:
             self._usage_log.append(record)
         except Exception as error:  # noqa: BLE001 - see docstring
             logger.warning("Could not record agent token usage: %s", error)
+
+    @staticmethod
+    def _branch_response(state: ConversationState) -> AgentBranchResponse:
+        return AgentBranchResponse(branch=state.current_branch, branches=sorted(state.branches))
+
+    @staticmethod
+    def _next_checkpoint_name(state: ConversationState) -> str:
+        index = len(state.checkpoints) + 1
+
+        while f"cp-{index}" in state.checkpoints:
+            index += 1
+
+        return f"cp-{index}"
+
+    @staticmethod
+    def _require_name(name: str) -> str:
+        cleaned = name.strip()
+
+        if not cleaned:
+            raise HTTPException(status_code=422, detail="Name must not be empty")
+
+        return cleaned
 
     @staticmethod
     async def _count_history_tokens(history_prefix: str) -> int | None:
@@ -231,26 +430,15 @@ class JapaneseLearningAgent:
         )
 
     @staticmethod
-    def _build_history_prefix(history: ConversationHistory) -> str:
-        """Everything that would come before the new message in the prompt -
-        the exact text token-counted as "history". Empty when nothing has
-        been said yet, so the very first turn reports zero history tokens.
-
-        With compression off there is never a summary, so this builds
-        precisely the prompt this agent has always built.
+    def _build_history_prefix(window: ContextWindow) -> str:
+        """Everything that comes before the new message in the prompt - the
+        exact text token-counted as "history". Empty when the strategy has
+        nothing to add, so the very first turn reports zero context tokens.
         """
-        if not history.summary and not history.messages:
+        if not window.sections:
             return ""
 
-        sections = [_INSTRUCTIONS]
-
-        if history.summary:
-            sections.append(f"Summary of the earlier part of the conversation:\n{history.summary}")
-
-        if history.messages:
-            sections.append(f"Conversation so far:\n{format_transcript(history.messages)}")
-
-        return "\n\n".join(sections)
+        return "\n\n".join([_INSTRUCTIONS, *window.sections])
 
     @staticmethod
     def _build_prompt(message: str, history_prefix: str) -> str:

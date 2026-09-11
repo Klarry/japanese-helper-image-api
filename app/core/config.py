@@ -54,3 +54,9 @@ AGENT_SUMMARY_UPDATE_THRESHOLD = int(os.getenv("AGENT_SUMMARY_UPDATE_THRESHOLD",
 # One record per /agent/chat call, so token spend with and without
 # compression can be compared after the fact.
 AGENT_USAGE_LOG_FILE_PATH = os.getenv("AGENT_USAGE_LOG_FILE_PATH", "data/agent_token_usage.json")
+
+# --- Agent context strategies (Day 8 experiment) ---------------------------
+# How many key-value facts the Sticky Facts strategy keeps. It is a memory of
+# what stays useful later - goals, constraints, preferences, decisions - not a
+# transcript, so it is deliberately small.
+AGENT_FACTS_LIMIT = int(os.getenv("AGENT_FACTS_LIMIT", "20"))
