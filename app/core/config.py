@@ -60,3 +60,15 @@ AGENT_USAGE_LOG_FILE_PATH = os.getenv("AGENT_USAGE_LOG_FILE_PATH", "data/agent_t
 # what stays useful later - goals, constraints, preferences, decisions - not a
 # transcript, so it is deliberately small.
 AGENT_FACTS_LIMIT = int(os.getenv("AGENT_FACTS_LIMIT", "20"))
+
+# --- Agent memory layers (Day 11) ------------------------------------------
+# Long-term memory lives in its own file, apart from the conversation: it is
+# the one layer that has to outlive a dialogue being cleared, so clearing the
+# history cannot take it with it by accident.
+AGENT_LONG_TERM_MEMORY_FILE_PATH = os.getenv(
+    "AGENT_LONG_TERM_MEMORY_FILE_PATH", "data/agent_long_term_memory.json"
+)
+# How many entries each list (and the profile) inside working and long-term
+# memory keeps. Both layers are memories of what matters, not transcripts, so
+# they stay small on purpose.
+AGENT_MEMORY_ENTRY_LIMIT = int(os.getenv("AGENT_MEMORY_ENTRY_LIMIT", "10"))

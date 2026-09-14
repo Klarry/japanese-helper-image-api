@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from app.core.config import AGENT_RECENT_MESSAGES_KEPT
 from app.schemas.agent import ContextStrategy
 from app.services.agent_history_storage import ConversationHistory, HistoryMessage, format_transcript
+from app.services.agent_memory import MemoryLayers
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,7 @@ def build_context(
     strategy: ContextStrategy,
     history: ConversationHistory,
     recent_messages_kept: int = AGENT_RECENT_MESSAGES_KEPT,
+    memory: MemoryLayers | None = None,
 ) -> ContextWindow:
     """Build the context for one request, without changing the history.
 
@@ -64,8 +66,22 @@ def build_context(
       replayed under another strategy) but never reach the model.
     * STICKY_FACTS sends the key-value facts plus that same window, and no
       summary at all.
+    * LAYERED_MEMORY sends the three memory layers, each as its own labelled
+      section: long-term, then working, then short-term. Nothing is merged -
+      the model is told which layer each line came from, which is what lets
+      one layer be cleared without disturbing the others.
     """
     window = history.messages[-recent_messages_kept:] if recent_messages_kept > 0 else []
+
+    if strategy is ContextStrategy.LAYERED_MEMORY:
+        layers = memory or MemoryLayers()
+
+        return ContextWindow(
+            sections=layers.as_sections(),
+            messages=layers.short_term.messages,
+            summary_tokens=0,
+            facts={},
+        )
 
     if strategy is ContextStrategy.SUMMARY:
         sections = []

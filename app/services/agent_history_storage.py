@@ -18,7 +18,9 @@ diverge without touching each other.
         "main": {"summary": "", "summary_tokens": null,
                  "facts": {"goal": "..."}, "messages": [{"role": ..., "content": ...}]}
       },
-      "checkpoints": {"cp-1": {"branch": "main", "history": {...}}}
+      "checkpoints": {"cp-1": {"branch": "main", "history": {...}}},
+      "working_memory": {"goals": [...], "requirements": [...],
+                         "constraints": [...], "decisions": [...]}
     }
 
 A file written before branches existed holds a single conversation at the
@@ -37,6 +39,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from app.core.config import AGENT_HISTORY_FILE_PATH
+from app.services.agent_memory import WorkingMemory, working_memory_as_json, working_memory_from_json
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +85,17 @@ class Checkpoint:
 @dataclass
 class ConversationState:
     """Everything persisted for the agent: the branches, the checkpoints
-    taken on them, which branch is being talked on, and which strategy was
-    chosen (empty until a client chooses one)."""
+    taken on them, which branch is being talked on, which strategy was
+    chosen (empty until a client chooses one), and the working memory of the
+    task being worked on.
+
+    ``working_memory`` sits beside the branches rather than inside them, and
+    is never folded into a transcript: it is the current task's own layer,
+    and mixing it into the messages is exactly what Day 11's memory model
+    exists to avoid. Long-term memory is not here at all - it lives in its
+    own file (see agent_memory), because it has to survive this whole object
+    being thrown away.
+    """
 
     strategy: str = ""
     current_branch: str = MAIN_BRANCH
@@ -91,6 +103,7 @@ class ConversationState:
         default_factory=lambda: {MAIN_BRANCH: ConversationHistory()}
     )
     checkpoints: dict[str, Checkpoint] = field(default_factory=dict)
+    working_memory: "WorkingMemory" = field(default_factory=lambda: WorkingMemory())
 
     def current(self) -> ConversationHistory:
         """The branch being talked on. Created empty if it somehow went
@@ -239,6 +252,7 @@ class AgentHistoryStorage:
             current_branch=current_branch,
             branches=branches,
             checkpoints=checkpoints,
+            working_memory=working_memory_from_json(data.get("working_memory")),
         )
 
     def save(self, state: ConversationState) -> None:
@@ -256,6 +270,7 @@ class AgentHistoryStorage:
                         name: {"branch": saved.branch, "history": _history_as_json(saved.history)}
                         for name, saved in state.checkpoints.items()
                     },
+                    "working_memory": working_memory_as_json(state.working_memory),
                 },
                 ensure_ascii=False,
                 indent=2,

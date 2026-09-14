@@ -57,6 +57,12 @@ LOG_LEVEL=INFO                    # optional, defaults to INFO
 AGENT_COMPRESSION_ENABLED=false   # optional, defaults to false
 ```
 
+Paths for the agent's files (`AGENT_HISTORY_FILE_PATH`,
+`AGENT_LONG_TERM_MEMORY_FILE_PATH`, `AGENT_USAGE_LOG_FILE_PATH`) and the sizes
+of its memories (`AGENT_RECENT_MESSAGES_KEPT`, `AGENT_SUMMARY_UPDATE_THRESHOLD`,
+`AGENT_FACTS_LIMIT`, `AGENT_MEMORY_ENTRY_LIMIT`) are all overridable the same
+way, and all have working defaults.
+
 `GEMINI_API_KEY` is read server-side only, in `app/core/config.py`, and is never
 returned to a client or written to logs.
 
@@ -136,6 +142,50 @@ when the point is which branch is being talked on.
 
 Branches, checkpoints, facts and the chosen strategy all live in
 `data/agent_history.json` and come back after a restart.
+
+### Memory layers
+
+The strategies above all answer the same question - how much of the
+conversation to send. `layered_memory` answers a different one: what kind of
+thing is being remembered. Memory is split into three layers, stored apart and
+sent apart, because they have different lifetimes.
+
+| Layer | What it holds | How long it lives | Where it is kept |
+| --- | --- | --- | --- |
+| `short_term` | the current conversation, message by message | the dialogue | `data/agent_history.json`, in the branch |
+| `working` | the current task: goals, requirements, constraints, decisions | the task | `data/agent_history.json`, beside the branches |
+| `long_term` | the learner: profile, preferences, important decisions, knowledge | across dialogues and restarts | `data/agent_long_term_memory.json` |
+
+Under `layered_memory` the prompt carries each layer as its own labelled
+section - `LONG-TERM MEMORY`, `WORKING MEMORY`, `SHORT-TERM MEMORY`, in that
+order - rather than one merged history, and an empty layer is left out
+entirely. `GET /agent/context` shows the exact text.
+
+What goes where is decided per message by `MemoryRouter`, through the same
+`gemini_service` every other feature uses: wording like "remember for a long
+time" routes to long-term, "for the current task" to working, and an ordinary
+request ("explain this grammar") writes to neither - it is already the
+conversation. The router names only the layers that change; a layer it does
+not name keeps exactly what it had. Like summarising and fact-keeping it is
+best-effort: a failed routing keeps the previous memory and is retried on the
+next message rather than failing an answer that already worked. Its extra
+Gemini call is recorded as `memory_tokens`, separately from the answer's own
+usage.
+
+- `GET /agent/memory` returns all three layers, each under its own key.
+- `PUT /agent/memory/short_term` replaces the conversation;
+  `PUT /agent/memory/working` and `PUT /agent/memory/long_term` update those
+  layers, leaving out a field to keep its current value.
+- `DELETE /agent/memory/{layer}` empties one layer and leaves the other two
+  exactly as they are.
+
+`DELETE /agent/history` ends the conversation, so it clears the two layers
+scoped to one - short-term and working - and deliberately leaves long-term
+memory alone. That is why long-term memory has its own file: clearing a
+dialogue must never mean forgetting the learner.
+
+Only `layered_memory` writes to these layers. Under every other strategy they
+are read but never written, so nothing that worked before behaves differently.
 
 The summary and the recent messages are persisted together in
 `data/agent_history.json`, so a restart resumes the conversation either way,

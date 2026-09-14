@@ -10,9 +10,14 @@ from app.schemas.agent import (
     AgentCheckpointResponse,
     AgentContextResponse,
     AgentHistoryResponse,
+    AgentLongTermMemoryRequest,
+    AgentMemoryResponse,
+    AgentShortTermMemoryRequest,
     AgentStrategyRequest,
     AgentStrategyResponse,
     AgentUsageResponse,
+    AgentWorkingMemoryRequest,
+    MemoryLayer,
 )
 from app.services.japanese_learning_agent import agent
 
@@ -65,6 +70,40 @@ async def create_agent_branch(request: AgentBranchRequest) -> AgentBranchRespons
 async def switch_agent_branch(request: AgentBranchSwitchRequest) -> AgentBranchResponse:
     """Talk on another branch from now on."""
     return agent.switch_branch(request.name)
+
+
+@router.get("/agent/memory")
+async def agent_memory() -> AgentMemoryResponse:
+    """All three memory layers, each under its own key: the current
+    conversation, the current task, and what is remembered about the
+    learner across conversations."""
+    return agent.get_memory()
+
+
+@router.put("/agent/memory/short_term")
+async def update_short_term_memory(request: AgentShortTermMemoryRequest) -> AgentMemoryResponse:
+    """Replace the current conversation."""
+    return agent.update_short_term(request.messages)
+
+
+@router.put("/agent/memory/working")
+async def update_working_memory(request: AgentWorkingMemoryRequest) -> AgentMemoryResponse:
+    """Update the current task's goals, requirements, constraints and
+    decisions. Fields left out keep their current value."""
+    return agent.update_working_memory(request)
+
+
+@router.put("/agent/memory/long_term")
+async def update_long_term_memory(request: AgentLongTermMemoryRequest) -> AgentMemoryResponse:
+    """Update what is remembered about the learner between conversations."""
+    return agent.update_long_term_memory(request)
+
+
+@router.delete("/agent/memory/{layer}")
+async def clear_memory_layer(layer: MemoryLayer) -> AgentMemoryResponse:
+    """Empty one layer - short_term, working or long_term - and leave the
+    other two exactly as they are."""
+    return agent.clear_memory(layer)
 
 
 @router.get("/agent/usage")

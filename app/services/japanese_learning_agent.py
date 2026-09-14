@@ -21,9 +21,16 @@ from app.schemas.agent import (
     AgentCompressionStatus,
     AgentContextResponse,
     AgentHistoryMessage,
+    AgentLongTermMemory,
+    AgentLongTermMemoryRequest,
+    AgentMemoryResponse,
+    AgentShortTermMemory,
     AgentStrategyResponse,
     AgentTokenUsage,
+    AgentWorkingMemory,
+    AgentWorkingMemoryRequest,
     ContextStrategy,
+    MemoryLayer,
 )
 from app.services.agent_context import ContextWindow, build_context
 from app.services.agent_facts_extractor import FactsExtractor
@@ -33,8 +40,18 @@ from app.services.agent_history_storage import (
     Checkpoint,
     ConversationHistory,
     ConversationState,
+    HistoryMessage,
     storage,
 )
+from app.services.agent_memory import (
+    AgentLongTermMemoryStorage,
+    LongTermMemory,
+    MemoryLayers,
+    ShortTermMemory,
+    WorkingMemory,
+    long_term_storage,
+)
+from app.services.agent_memory_router import MemoryRouter
 from app.services.agent_usage_log import AgentUsageLog, UsageRecord, usage_log
 from app.services.gemini_service import count_tokens, generate_text_with_usage
 
@@ -77,6 +94,11 @@ class JapaneseLearningAgent:
     * ``branching`` - the current branch's whole conversation. Checkpoints
       and branches are available under every strategy; this one exists for
       when the point of the experiment is which branch is being talked on.
+    * ``layered_memory`` - the three memory layers, each sent as its own
+      labelled section (see agent_memory). This is the only strategy that
+      routes what the learner says into working or long-term memory; under
+      every other one those layers are left untouched, which is what keeps
+      the earlier days' behaviour exactly as it was.
 
     Token usage: Gemini's generateContent/Interactions response reports one
     combined prompt-token count for everything sent (instructions + context
@@ -98,6 +120,8 @@ class JapaneseLearningAgent:
         facts_extractor: FactsExtractor | None = None,
         compression_enabled: bool = AGENT_COMPRESSION_ENABLED,
         recent_messages_kept: int = AGENT_RECENT_MESSAGES_KEPT,
+        long_term_memory: AgentLongTermMemoryStorage = long_term_storage,
+        memory_router: MemoryRouter | None = None,
     ) -> None:
         self._history = history_storage
         self._usage_log = usage_log
@@ -105,6 +129,8 @@ class JapaneseLearningAgent:
         self._facts = facts_extractor or FactsExtractor()
         self._compression_enabled = compression_enabled
         self._recent_kept = recent_messages_kept
+        self._long_term = long_term_memory
+        self._memory_router = memory_router or MemoryRouter()
 
     async def run(
         self,
@@ -116,7 +142,8 @@ class JapaneseLearningAgent:
         state = self._history.load()
         active = self._resolve_strategy(state, strategy, compression_enabled)
         history = state.current()
-        window = build_context(active, history, self._recent_kept)
+        long_term = self._long_term.load()
+        window = build_context(active, history, self._recent_kept, self._memory_layers(state, long_term))
         history_prefix = self._build_history_prefix(window)
         prompt = self._build_prompt(message, history_prefix)
 
@@ -143,9 +170,12 @@ class JapaneseLearningAgent:
         history.messages.append({"role": "assistant", "content": generated.text})
         summarization_tokens = await self._compress_if_due(history, active)
         facts_tokens = await self._refresh_facts(history, message, active)
+        memory_tokens = await self._route_memory(state, long_term, message, active)
         self._history.save(state)
 
-        self._record_usage(usage, active, sent_context, summary_used, summarization_tokens, facts_tokens)
+        self._record_usage(
+            usage, active, sent_context, summary_used, summarization_tokens, facts_tokens, memory_tokens
+        )
 
         return AgentChatResponse(
             response=generated.text,
@@ -162,7 +192,14 @@ class JapaneseLearningAgent:
 
     def clear_history(self) -> None:
         """Empty the conversation - every branch and checkpoint - while
-        keeping the chosen strategy, which is a setting, not a message."""
+        keeping the chosen strategy, which is a setting, not a message.
+
+        This ends the conversation, so it takes the two layers scoped to one
+        with it: short-term memory and the working memory of the task. It
+        deliberately does not touch long-term memory, which is stored in its
+        own file precisely so that "clear this dialogue" cannot mean "forget
+        the learner".
+        """
         state = self._history.load()
         self._history.save(ConversationState(strategy=state.strategy))
 
@@ -185,7 +222,9 @@ class JapaneseLearningAgent:
         the same code that builds the real prompt."""
         state = self._history.load()
         active = self._resolve_strategy(state, None, None)
-        window = build_context(active, state.current(), self._recent_kept)
+        window = build_context(
+            active, state.current(), self._recent_kept, self._memory_layers(state, self._long_term.load())
+        )
 
         return AgentContextResponse(
             strategy=active.value,
@@ -199,6 +238,85 @@ class JapaneseLearningAgent:
             ],
             context=self._build_history_prefix(window),
         )
+
+    # --- memory layers -----------------------------------------------------
+
+    def get_memory(self) -> AgentMemoryResponse:
+        """All three layers as they stand, each read from where it is kept:
+        short-term from the branch's messages, working memory from the
+        conversation state, long-term from its own file."""
+        state = self._history.load()
+
+        return self._memory_response(state, self._long_term.load())
+
+    def update_short_term(self, messages: list[AgentHistoryMessage]) -> AgentMemoryResponse:
+        """Replace the current conversation. Writing the dialogue directly is
+        what makes short-term memory updatable like the other two layers;
+        ordinary turns still arrive through /agent/chat."""
+        state = self._history.load()
+        history = state.current()
+        history.messages = [
+            HistoryMessage(role=entry.role, content=entry.content) for entry in messages
+        ]
+        history.summary = ""
+        history.summary_tokens = None
+        self._history.save(state)
+
+        return self._memory_response(state, self._long_term.load())
+
+    def update_working_memory(self, request: AgentWorkingMemoryRequest) -> AgentMemoryResponse:
+        """Update the task layer. A field left out of the request stays as it
+        was - so a client can add constraints without restating the goals."""
+        state = self._history.load()
+        memory = state.working_memory
+        state.working_memory = WorkingMemory(
+            goals=memory.goals if request.goals is None else list(request.goals),
+            requirements=memory.requirements if request.requirements is None else list(request.requirements),
+            constraints=memory.constraints if request.constraints is None else list(request.constraints),
+            decisions=memory.decisions if request.decisions is None else list(request.decisions),
+        )
+        self._history.save(state)
+
+        return self._memory_response(state, self._long_term.load())
+
+    def update_long_term_memory(self, request: AgentLongTermMemoryRequest) -> AgentMemoryResponse:
+        """Update the learner layer, with the same leave-out-to-keep rule."""
+        memory = self._long_term.load()
+        updated = LongTermMemory(
+            profile=memory.profile if request.profile is None else dict(request.profile),
+            preferences=memory.preferences if request.preferences is None else list(request.preferences),
+            decisions=memory.decisions if request.decisions is None else list(request.decisions),
+            knowledge=memory.knowledge if request.knowledge is None else list(request.knowledge),
+        )
+        self._long_term.save(updated)
+
+        return self._memory_response(self._history.load(), updated)
+
+    def clear_memory(self, layer: MemoryLayer) -> AgentMemoryResponse:
+        """Empty one layer and leave the other two alone.
+
+        That the layers are stored apart is what makes this a three-line
+        method: clearing long-term memory rewrites one file, clearing the
+        other two rewrites part of another, and neither can reach into the
+        layer it is not clearing.
+        """
+        state = self._history.load()
+
+        if layer is MemoryLayer.LONG_TERM:
+            self._long_term.clear()
+            return self._memory_response(state, self._long_term.load())
+
+        if layer is MemoryLayer.WORKING:
+            state.working_memory = WorkingMemory()
+        else:
+            history = state.current()
+            history.messages = []
+            history.summary = ""
+            history.summary_tokens = None
+
+        self._history.save(state)
+
+        return self._memory_response(state, self._long_term.load())
 
     # --- checkpoints and branches -----------------------------------------
 
@@ -341,6 +459,84 @@ class JapaneseLearningAgent:
 
         return update.tokens_used
 
+    async def _route_memory(
+        self,
+        state: ConversationState,
+        long_term: LongTermMemory,
+        message: str,
+        strategy: ContextStrategy,
+    ) -> int:
+        """Put what the learner just said into the layer it belongs to.
+
+        Only the layered-memory strategy does this: under the other
+        strategies the memory layers are read but never written, so nothing
+        that worked before starts behaving differently.
+
+        The router names the layers that change and gives each one back in
+        full; a layer it does not name is left exactly as it was, so an
+        ordinary question writes nothing. Best-effort, like summarising and
+        fact-keeping: the answer is already the learner's, and a failed
+        routing keeps the previous memory and is retried on the next
+        message rather than failing a good answer.
+        """
+        if strategy is not ContextStrategy.LAYERED_MEMORY:
+            return 0
+
+        try:
+            routing = await self._memory_router.route(message, state.working_memory, long_term)
+        except Exception as error:  # noqa: BLE001 - see docstring
+            logger.warning("Could not route agent memory: %s", error)
+            return 0
+
+        if routing.working is not None:
+            state.working_memory = routing.working
+
+        if routing.long_term is not None:
+            # Saved on its own, to its own file: long-term memory outlives
+            # the conversation being saved below, and outlives it being
+            # cleared.
+            self._long_term.save(routing.long_term)
+            long_term.profile = routing.long_term.profile
+            long_term.preferences = routing.long_term.preferences
+            long_term.decisions = routing.long_term.decisions
+            long_term.knowledge = routing.long_term.knowledge
+
+        return routing.tokens_used
+
+    @staticmethod
+    def _memory_layers(state: ConversationState, long_term: LongTermMemory) -> MemoryLayers:
+        """The three layers assembled from the three places they are kept."""
+        return MemoryLayers(
+            short_term=ShortTermMemory(messages=state.current().messages),
+            working=state.working_memory,
+            long_term=long_term,
+        )
+
+    @staticmethod
+    def _memory_response(state: ConversationState, long_term: LongTermMemory) -> AgentMemoryResponse:
+        working = state.working_memory
+
+        return AgentMemoryResponse(
+            short_term=AgentShortTermMemory(
+                messages=[
+                    AgentHistoryMessage(role=entry["role"], content=entry["content"])
+                    for entry in state.current().messages
+                ]
+            ),
+            working=AgentWorkingMemory(
+                goals=working.goals,
+                requirements=working.requirements,
+                constraints=working.constraints,
+                decisions=working.decisions,
+            ),
+            long_term=AgentLongTermMemory(
+                profile=long_term.profile,
+                preferences=long_term.preferences,
+                decisions=long_term.decisions,
+                knowledge=long_term.knowledge,
+            ),
+        )
+
     def _record_usage(
         self,
         usage: AgentTokenUsage,
@@ -349,6 +545,7 @@ class JapaneseLearningAgent:
         summary_used: bool,
         summarization_tokens: int,
         facts_tokens: int,
+        memory_tokens: int = 0,
     ) -> None:
         """Persist what this request cost and which strategy produced it, so
         the strategies can be compared afterwards. Instrumentation only - a
@@ -365,6 +562,7 @@ class JapaneseLearningAgent:
             "total_tokens": usage.total_tokens,
             "summarization_tokens": summarization_tokens,
             "facts_tokens": facts_tokens,
+            "memory_tokens": memory_tokens,
         }
 
         try:

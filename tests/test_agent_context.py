@@ -1,6 +1,7 @@
 from app.schemas.agent import ContextStrategy
 from app.services.agent_context import build_context
 from app.services.agent_history_storage import ConversationHistory
+from app.services.agent_memory import LongTermMemory, MemoryLayers, ShortTermMemory, WorkingMemory
 
 RECENT_KEPT = 6
 
@@ -159,3 +160,77 @@ def test_the_windowed_strategies_send_less_than_the_full_one():
     assert len(facts.text) < len(full.text)
     # Facts cost a little more than the bare window - that is what they buy.
     assert len(facts.text) > len(window.text)
+
+
+# --- layered memory --------------------------------------------------------
+
+
+def _layered(messages=None, working=None, long_term=None):
+    history = ConversationHistory(messages=messages or [])
+
+    return build_context(
+        ContextStrategy.LAYERED_MEMORY,
+        history,
+        RECENT_KEPT,
+        MemoryLayers(
+            short_term=ShortTermMemory(messages=history.messages),
+            working=working or WorkingMemory(),
+            long_term=long_term or LongTermMemory(),
+        ),
+    )
+
+
+def test_layered_memory_sends_each_layer_as_its_own_named_section():
+    window = _layered(
+        messages=_messages(2),
+        working=WorkingMemory(constraints=["уровень N4"]),
+        long_term=LongTermMemory(profile={"favorite_word": "学習"}),
+    )
+
+    assert len(window.sections) == 3
+    assert "LONG-TERM MEMORY" in window.text
+    assert "WORKING MEMORY" in window.text
+    assert "SHORT-TERM MEMORY" in window.text
+
+
+def test_layered_memory_sends_the_whole_conversation_as_short_term_memory():
+    """Short-term memory is the current conversation, not a window over it -
+    trimming is what the other strategies are for."""
+    window = _layered(messages=_messages(20))
+
+    assert len(window.messages) == 20
+    assert "message 0" in window.text
+
+
+def test_layered_memory_sends_the_other_layers_even_with_nothing_said_yet():
+    window = _layered(long_term=LongTermMemory(knowledge=["любимое слово 学習"]))
+
+    assert "学習" in window.text
+    assert "SHORT-TERM MEMORY" not in window.text
+
+
+def test_layered_memory_uses_no_summary_and_no_sticky_facts():
+    window = _layered(messages=_messages(4), working=WorkingMemory(goals=["цель"]))
+
+    assert window.summary_tokens == 0
+    assert window.facts == {}
+
+
+def test_layered_memory_without_any_memory_sends_nothing():
+    assert build_context(ContextStrategy.LAYERED_MEMORY, _history(4), RECENT_KEPT).sections == []
+
+
+def test_the_other_strategies_ignore_the_memory_layers():
+    """Passing memory in must not change what the earlier strategies send -
+    they were never about layers."""
+    memory = MemoryLayers(
+        short_term=ShortTermMemory(messages=_messages(2)),
+        working=WorkingMemory(constraints=["уровень N4"]),
+        long_term=LongTermMemory(profile={"favorite_word": "学習"}),
+    )
+
+    for strategy in (ContextStrategy.FULL, ContextStrategy.SLIDING_WINDOW, ContextStrategy.STICKY_FACTS):
+        text = build_context(strategy, _history(4), RECENT_KEPT, memory).text
+
+        assert "уровень N4" not in text
+        assert "学習" not in text

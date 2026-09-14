@@ -10,8 +10,10 @@ from app.schemas.agent import (
 )
 from app.services import agent_facts_extractor as facts_module
 from app.services import agent_history_compressor as compressor_module
+from app.services import agent_memory_router as memory_router_module
 from app.services import japanese_learning_agent as agent_module
 from app.services.agent_history_storage import AgentHistoryStorage
+from app.services.agent_memory import AgentLongTermMemoryStorage
 from app.services.agent_usage_log import AgentUsageLog
 from app.services.gemini_service import GeneratedText
 from app.services.japanese_learning_agent import JapaneseLearningAgent
@@ -47,6 +49,11 @@ def _isolate_agent(monkeypatch, tmp_path, compression_enabled=False):
     temp_storage = AgentHistoryStorage(file_path=str(tmp_path / "history.json"))
     monkeypatch.setattr(agent_module.agent, "_history", temp_storage)
     monkeypatch.setattr(agent_module.agent, "_usage_log", AgentUsageLog(file_path=str(tmp_path / "usage.json")))
+    monkeypatch.setattr(
+        agent_module.agent,
+        "_long_term",
+        AgentLongTermMemoryStorage(file_path=str(tmp_path / "long_term.json")),
+    )
     monkeypatch.setattr(agent_module.agent, "_compression_enabled", compression_enabled)
     return temp_storage
 
@@ -665,3 +672,276 @@ def test_usage_entries_say_which_strategy_produced_them(monkeypatch, tmp_path):
     entries = client.get("/agent/usage").json()["entries"]
 
     assert [entry["strategy"] for entry in entries] == ["full", "sliding_window"]
+
+
+# --- memory layers (Day 11) ------------------------------------------------
+
+
+def _mock_memory_router(monkeypatch, *answers: str):
+    """Answer the router's Gemini call with each JSON in turn, repeating the
+    last one - so a scenario can say what each message routes to."""
+    prompts = []
+    queue = list(answers) or ["{}"]
+
+    async def fake_generate_text_with_usage(prompt, model=None, temperature=None):
+        prompts.append(prompt)
+        answer = queue.pop(0) if len(queue) > 1 else queue[0]
+        return GeneratedText(text=answer, input_tokens=150, output_tokens=25)
+
+    monkeypatch.setattr(memory_router_module, "generate_text_with_usage", fake_generate_text_with_usage)
+    return prompts
+
+
+def _say_with_memory(message: str):
+    response = client.post("/agent/chat", json={"message": message, "strategy": "layered_memory"})
+    assert response.status_code == 200
+    return response
+
+
+def _memory():
+    return client.get("/agent/memory").json()
+
+
+def _scenario(monkeypatch, tmp_path):
+    """The three-layer scenario: one message aimed at long-term memory, one
+    at the current task, then three ordinary turns that only continue the
+    conversation."""
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "ответ агента")
+    _mock_count_tokens(monkeypatch, 90)
+    client.put("/agent/strategy", json={"strategy": "layered_memory"})
+    _mock_memory_router(
+        monkeypatch,
+        '{"long_term": {"profile": {"favorite_word": "学習"}}}',
+        '{"working": {"constraints": ["уровень N4", "минималистичный интерфейс"],'
+        ' "requirements": ["обязательно показывать перевод"]}}',
+        "{}",
+    )
+    _say_with_memory("Запомни надолго: моё любимое японское слово — 学習.")
+    _say_with_memory(
+        "Для текущей задачи запомни: уровень N4, минималистичный интерфейс "
+        "и обязательно показывать перевод."
+    )
+    _say_with_memory("Давай создадим пример предложения со словом 学習.")
+    _say_with_memory("Сделай его уровня N4.")
+    _say_with_memory("Теперь объясни грамматику этого предложения.")
+
+
+def test_each_message_lands_in_the_layer_it_was_aimed_at(monkeypatch, tmp_path):
+    _scenario(monkeypatch, tmp_path)
+
+    memory = _memory()
+
+    assert memory["long_term"]["profile"] == {"favorite_word": "学習"}
+    assert memory["working"]["constraints"] == ["уровень N4", "минималистичный интерфейс"]
+    assert memory["working"]["requirements"] == ["обязательно показывать перевод"]
+    assert len(memory["short_term"]["messages"]) == 10
+
+
+def test_the_layers_do_not_leak_into_each_other(monkeypatch, tmp_path):
+    _scenario(monkeypatch, tmp_path)
+
+    memory = _memory()
+
+    assert memory["long_term"]["preferences"] == []
+    assert memory["long_term"]["knowledge"] == []
+    assert "学習" not in str(memory["working"])
+    assert "N4" not in str(memory["long_term"])
+    # The conversation is not copied into the other two layers - they hold
+    # what was distilled from it, not a second transcript.
+    assert "объясни грамматику" not in str(memory["working"])
+    assert "объясни грамматику" not in str(memory["long_term"])
+
+
+def test_an_ordinary_request_leaves_the_other_layers_untouched(monkeypatch, tmp_path):
+    _scenario(monkeypatch, tmp_path)
+    before = _memory()
+
+    _say_with_memory("И ещё один пример, пожалуйста.")
+    after = _memory()
+
+    assert after["working"] == before["working"]
+    assert after["long_term"] == before["long_term"]
+    assert len(after["short_term"]["messages"]) == len(before["short_term"]["messages"]) + 2
+
+
+def test_every_layer_is_named_in_the_prompt_that_is_sent(monkeypatch, tmp_path):
+    """The layers are handed to the model as labelled sections rather than
+    merged into one history."""
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = []
+
+    async def fake_generate_text_with_usage(prompt, model=None, temperature=None):
+        prompts.append(prompt)
+        return GeneratedText(text="ответ", input_tokens=40, output_tokens=8)
+
+    monkeypatch.setattr(agent_module, "generate_text_with_usage", fake_generate_text_with_usage)
+    _mock_count_tokens(monkeypatch, 90)
+    _mock_memory_router(monkeypatch, '{"long_term": {"profile": {"favorite_word": "学習"}}}', "{}")
+    _say_with_memory("Запомни надолго: моё любимое японское слово — 学習.")
+    _say_with_memory("Давай создадим пример предложения.")
+
+    assert "LONG-TERM MEMORY" in prompts[-1]
+    assert "SHORT-TERM MEMORY" in prompts[-1]
+
+
+def test_clearing_short_term_memory_keeps_the_task_and_the_learner(monkeypatch, tmp_path):
+    _scenario(monkeypatch, tmp_path)
+
+    memory = client.delete("/agent/memory/short_term").json()
+
+    assert memory["short_term"]["messages"] == []
+    assert memory["working"]["constraints"] == ["уровень N4", "минималистичный интерфейс"]
+    assert memory["long_term"]["profile"] == {"favorite_word": "学習"}
+
+
+def test_clearing_working_memory_keeps_the_conversation_and_the_learner(monkeypatch, tmp_path):
+    _scenario(monkeypatch, tmp_path)
+
+    memory = client.delete("/agent/memory/working").json()
+
+    assert memory["working"] == {"goals": [], "requirements": [], "constraints": [], "decisions": []}
+    assert len(memory["short_term"]["messages"]) == 10
+    assert memory["long_term"]["profile"] == {"favorite_word": "学習"}
+
+
+def test_clearing_long_term_memory_keeps_the_conversation_and_the_task(monkeypatch, tmp_path):
+    _scenario(monkeypatch, tmp_path)
+
+    memory = client.delete("/agent/memory/long_term").json()
+
+    assert memory["long_term"]["profile"] == {}
+    assert len(memory["short_term"]["messages"]) == 10
+    assert memory["working"]["constraints"] == ["уровень N4", "минималистичный интерфейс"]
+
+
+def test_a_cleared_layer_stops_being_sent_to_the_model(monkeypatch, tmp_path):
+    _scenario(monkeypatch, tmp_path)
+    client.delete("/agent/memory/long_term")
+
+    context = client.get("/agent/context").json()["context"]
+
+    assert "LONG-TERM MEMORY" not in context
+    assert "WORKING MEMORY" in context
+
+
+def test_clearing_an_unknown_layer_is_reported(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+
+    assert client.delete("/agent/memory/everything").status_code == 422
+
+
+def test_long_term_memory_survives_a_restart(monkeypatch, tmp_path):
+    """Both files are re-opened from scratch, the way they would be after
+    the process restarts."""
+    _scenario(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(
+        agent_module.agent, "_history", AgentHistoryStorage(file_path=str(tmp_path / "history.json"))
+    )
+    monkeypatch.setattr(
+        agent_module.agent,
+        "_long_term",
+        AgentLongTermMemoryStorage(file_path=str(tmp_path / "long_term.json")),
+    )
+    memory = _memory()
+
+    assert memory["long_term"]["profile"] == {"favorite_word": "学習"}
+    assert memory["working"]["constraints"] == ["уровень N4", "минималистичный интерфейс"]
+    assert len(memory["short_term"]["messages"]) == 10
+
+
+def test_clearing_the_dialogue_ends_the_task_but_not_the_learner(monkeypatch, tmp_path):
+    """DELETE /agent/history ends the conversation, so it takes the two
+    layers scoped to one with it - and deliberately not long-term memory."""
+    _scenario(monkeypatch, tmp_path)
+
+    client.delete("/agent/history")
+    memory = _memory()
+
+    assert memory["short_term"]["messages"] == []
+    assert memory["working"]["constraints"] == []
+    assert memory["long_term"]["profile"] == {"favorite_word": "学習"}
+
+
+def test_a_layer_can_be_written_directly(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+
+    client.put("/agent/memory/long_term", json={"preferences": ["краткие ответы"]})
+    memory = client.put("/agent/memory/working", json={"goals": ["составить пример"]}).json()
+
+    assert memory["long_term"]["preferences"] == ["краткие ответы"]
+    assert memory["working"]["goals"] == ["составить пример"]
+
+
+def test_updating_one_field_of_a_layer_keeps_the_rest(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    client.put("/agent/memory/working", json={"goals": ["составить пример"], "constraints": ["N4"]})
+
+    memory = client.put("/agent/memory/working", json={"decisions": ["взяли 学習"]}).json()
+
+    assert memory["working"]["goals"] == ["составить пример"]
+    assert memory["working"]["constraints"] == ["N4"]
+    assert memory["working"]["decisions"] == ["взяли 学習"]
+
+
+def test_the_conversation_can_be_written_directly_as_short_term_memory(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+
+    memory = client.put(
+        "/agent/memory/short_term",
+        json={"messages": [{"role": "user", "content": "начнём заново"}]},
+    ).json()
+
+    assert memory["short_term"]["messages"] == [{"role": "user", "content": "начнём заново"}]
+    assert client.get("/agent/history").json()["messages"] == [
+        {"role": "user", "content": "начнём заново"}
+    ]
+
+
+def test_the_other_strategies_never_write_to_the_memory_layers(monkeypatch, tmp_path):
+    """Day 11 changes what the layered strategy does, and nothing else."""
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "ответ")
+    _mock_count_tokens(monkeypatch, 90)
+    _mock_memory_router(monkeypatch, '{"long_term": {"profile": {"favorite_word": "学習"}}}')
+
+    for strategy in ("full", "sliding_window", "branching"):
+        client.post(
+            "/agent/chat",
+            json={"message": "Запомни надолго: моё любимое слово — 学習.", "strategy": strategy},
+        )
+
+    memory = _memory()
+
+    assert memory["long_term"]["profile"] == {}
+    assert memory["working"]["goals"] == []
+
+
+def test_memory_routing_is_recorded_as_its_own_token_cost(monkeypatch, tmp_path):
+    """The extra Gemini call the layer routing costs is logged separately,
+    not folded into the answer's own numbers."""
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "ответ", input_tokens=40, output_tokens=8)
+    _mock_count_tokens(monkeypatch, 25)
+    _mock_memory_router(monkeypatch, '{"working": {"goals": ["пример"]}}')
+
+    _say_with_memory("Для текущей задачи запомни: нужен пример.")
+    entry = client.get("/agent/usage").json()["entries"][-1]
+
+    assert entry["strategy"] == "layered_memory"
+    assert entry["memory_tokens"] == 175
+    assert entry["total_tokens"] == 48
+
+
+def test_a_failed_routing_keeps_the_memory_and_still_answers(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "ответ агента")
+    _mock_count_tokens(monkeypatch, 90)
+    client.put("/agent/memory/working", json={"goals": ["составить пример"]})
+    _mock_memory_router(monkeypatch, "конечно, запомню!")
+
+    response = _say_with_memory("Для текущей задачи запомни: уровень N4.")
+
+    assert response.json()["response"] == "ответ агента"
+    assert _memory()["working"]["goals"] == ["составить пример"]

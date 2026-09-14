@@ -17,6 +17,17 @@ class ContextStrategy(str, Enum):
     SLIDING_WINDOW = "sliding_window"
     STICKY_FACTS = "sticky_facts"
     BRANCHING = "branching"
+    LAYERED_MEMORY = "layered_memory"
+
+
+class MemoryLayer(str, Enum):
+    """The three layers the agent's memory is made of, kept apart because
+    they have different lifetimes: short-term lasts a conversation, working
+    memory lasts a task, long-term outlives both."""
+
+    SHORT_TERM = "short_term"
+    WORKING = "working"
+    LONG_TERM = "long_term"
 
 
 class AgentChatRequest(BaseModel):
@@ -136,6 +147,65 @@ class AgentBranchResponse(BaseModel):
     branches: list[str]
 
 
+class AgentShortTermMemory(BaseModel):
+    """The current conversation. Not a copy of the transcript - it is the
+    stored messages of this session, reported as a memory layer."""
+
+    messages: list[AgentHistoryMessage] = []
+
+
+class AgentWorkingMemory(BaseModel):
+    """The task being worked on right now."""
+
+    goals: list[str] = []
+    requirements: list[str] = []
+    constraints: list[str] = []
+    decisions: list[str] = []
+
+
+class AgentLongTermMemory(BaseModel):
+    """What stays true about the learner between conversations."""
+
+    profile: dict[str, str] = {}
+    preferences: list[str] = []
+    decisions: list[str] = []
+    knowledge: list[str] = []
+
+
+class AgentMemoryResponse(BaseModel):
+    """All three layers, each under its own key. Deliberately not merged
+    into one blob: which layer something is in is the whole point."""
+
+    short_term: AgentShortTermMemory = AgentShortTermMemory()
+    working: AgentWorkingMemory = AgentWorkingMemory()
+    long_term: AgentLongTermMemory = AgentLongTermMemory()
+
+
+class AgentShortTermMemoryRequest(BaseModel):
+    """Replace the current conversation with these messages."""
+
+    messages: list[AgentHistoryMessage] = []
+
+
+class AgentWorkingMemoryRequest(BaseModel):
+    """Update working memory. A field left out stays as it is; send an empty
+    list to empty that field, or DELETE the layer to clear all of it."""
+
+    goals: list[str] | None = None
+    requirements: list[str] | None = None
+    constraints: list[str] | None = None
+    decisions: list[str] | None = None
+
+
+class AgentLongTermMemoryRequest(BaseModel):
+    """Update long-term memory, with the same leave-out-to-keep rule."""
+
+    profile: dict[str, str] | None = None
+    preferences: list[str] | None = None
+    decisions: list[str] | None = None
+    knowledge: list[str] | None = None
+
+
 class AgentUsageEntry(BaseModel):
     """One recorded /agent/chat call. Every field has a default so a record
     written by an older version of the app still reads back cleanly."""
@@ -151,6 +221,7 @@ class AgentUsageEntry(BaseModel):
     total_tokens: int | None = None
     summarization_tokens: int = 0
     facts_tokens: int = 0
+    memory_tokens: int = 0
 
 
 class AgentUsageResponse(BaseModel):
