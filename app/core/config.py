@@ -72,3 +72,11 @@ AGENT_LONG_TERM_MEMORY_FILE_PATH = os.getenv(
 # memory keeps. Both layers are memories of what matters, not transcripts, so
 # they stay small on purpose.
 AGENT_MEMORY_ENTRY_LIMIT = int(os.getenv("AGENT_MEMORY_ENTRY_LIMIT", "10"))
+
+# --- Agent user profile (Day 12) -------------------------------------------
+# How the learner wants to be answered - level, style, format, languages. It
+# is a setting, not something the conversation says, so it lives in its own
+# file apart from every memory layer and is applied to every request.
+AGENT_USER_PROFILE_FILE_PATH = os.getenv("AGENT_USER_PROFILE_FILE_PATH", "data/agent_user_profile.json")
+# How many free-form extra preferences the profile keeps.
+AGENT_PROFILE_PREFERENCES_LIMIT = int(os.getenv("AGENT_PROFILE_PREFERENCES_LIMIT", "10"))

@@ -206,6 +206,31 @@ class AgentLongTermMemoryRequest(BaseModel):
     knowledge: list[str] | None = None
 
 
+class AgentUserProfile(BaseModel):
+    """How the learner wants to be answered. Settings, not conversation - so
+    this is not one of the memory layers and is never mixed into them."""
+
+    preferred_language: str = ""
+    japanese_level: str = ""
+    explanation_style: str = ""
+    answer_format: str = ""
+    translation_language: str = ""
+    preferences: list[str] = []
+
+
+class AgentUserProfileRequest(BaseModel):
+    """Update the profile. A field left out stays as it is; send an empty
+    string (or an empty list) to unset one, or DELETE the profile to unset
+    everything."""
+
+    preferred_language: str | None = None
+    japanese_level: str | None = None
+    explanation_style: str | None = None
+    answer_format: str | None = None
+    translation_language: str | None = None
+    preferences: list[str] | None = None
+
+
 class AgentUsageEntry(BaseModel):
     """One recorded /agent/chat call. Every field has a default so a record
     written by an older version of the app still reads back cleanly."""

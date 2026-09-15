@@ -60,8 +60,9 @@ AGENT_COMPRESSION_ENABLED=false   # optional, defaults to false
 Paths for the agent's files (`AGENT_HISTORY_FILE_PATH`,
 `AGENT_LONG_TERM_MEMORY_FILE_PATH`, `AGENT_USAGE_LOG_FILE_PATH`) and the sizes
 of its memories (`AGENT_RECENT_MESSAGES_KEPT`, `AGENT_SUMMARY_UPDATE_THRESHOLD`,
-`AGENT_FACTS_LIMIT`, `AGENT_MEMORY_ENTRY_LIMIT`) are all overridable the same
-way, and all have working defaults.
+`AGENT_FACTS_LIMIT`, `AGENT_MEMORY_ENTRY_LIMIT`, `AGENT_USER_PROFILE_FILE_PATH`,
+`AGENT_PROFILE_PREFERENCES_LIMIT`) are all overridable the same way, and all have
+working defaults.
 
 `GEMINI_API_KEY` is read server-side only, in `app/core/config.py`, and is never
 returned to a client or written to logs.
@@ -186,6 +187,34 @@ dialogue must never mean forgetting the learner.
 
 Only `layered_memory` writes to these layers. Under every other strategy they
 are read but never written, so nothing that worked before behaves differently.
+
+### User profile
+
+The memory layers answer "what has been said". The profile answers "how this
+learner wants to be answered": `preferred_language`, `japanese_level`,
+`explanation_style`, `answer_format`, `translation_language`, and a free-form
+list of extra `preferences`. That is a setting rather than something the
+conversation mentioned, so it is kept out of all three layers, in its own file
+`data/agent_user_profile.json` (`AGENT_USER_PROFILE_FILE_PATH`).
+
+- `GET /agent/profile` returns it, `PUT /agent/profile` updates it (fields left
+  out keep their current value; send an empty string to unset one), and
+  `DELETE /agent/profile` unsets everything.
+- Every `/agent/chat` request reads it and, if anything is set, sends it as a
+  `USER PROFILE` block - under *every* strategy, since it is not a strategy and
+  does not belong to one. The learner never repeats their level or format.
+- An unset profile sends no block at all, so an agent without one gets exactly
+  the prompt it got before.
+
+The block sits after the context and immediately before the new message: it is
+the last thing the model reads before the question, and it stays out of the text
+counted as `history_tokens`, because history is what the conversation produced
+and the profile is a setting.
+
+Keeping it apart cuts both ways - clearing the conversation or any memory layer
+leaves the profile alone, and setting a profile puts no words into a
+conversation the learner never had. Same request, two profiles, two different
+answers: the only difference in what reaches Gemini is that block.
 
 The summary and the recent messages are persisted together in
 `data/agent_history.json`, so a restart resumes the conversation either way,

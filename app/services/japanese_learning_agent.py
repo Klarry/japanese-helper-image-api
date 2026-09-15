@@ -27,6 +27,8 @@ from app.schemas.agent import (
     AgentShortTermMemory,
     AgentStrategyResponse,
     AgentTokenUsage,
+    AgentUserProfile,
+    AgentUserProfileRequest,
     AgentWorkingMemory,
     AgentWorkingMemoryRequest,
     ContextStrategy,
@@ -52,6 +54,11 @@ from app.services.agent_memory import (
     long_term_storage,
 )
 from app.services.agent_memory_router import MemoryRouter
+from app.services.agent_user_profile import (
+    AgentUserProfileStorage,
+    UserProfile,
+    user_profile_storage,
+)
 from app.services.agent_usage_log import AgentUsageLog, UsageRecord, usage_log
 from app.services.gemini_service import count_tokens, generate_text_with_usage
 
@@ -100,6 +107,12 @@ class JapaneseLearningAgent:
       every other one those layers are left untouched, which is what keeps
       the earlier days' behaviour exactly as it was.
 
+    The user profile (see agent_user_profile) is not one of these and is not
+    a strategy: it says how the learner wants to be answered, so it goes
+    into every request under every strategy, and the learner never has to
+    repeat it. It sits between the context and the new message, which keeps
+    it out of the history token count - it is not history, it is a setting.
+
     Token usage: Gemini's generateContent/Interactions response reports one
     combined prompt-token count for everything sent (instructions + context
     + the new message), not a breakdown. To report context tokens and
@@ -122,6 +135,7 @@ class JapaneseLearningAgent:
         recent_messages_kept: int = AGENT_RECENT_MESSAGES_KEPT,
         long_term_memory: AgentLongTermMemoryStorage = long_term_storage,
         memory_router: MemoryRouter | None = None,
+        profile_storage: AgentUserProfileStorage = user_profile_storage,
     ) -> None:
         self._history = history_storage
         self._usage_log = usage_log
@@ -131,6 +145,7 @@ class JapaneseLearningAgent:
         self._recent_kept = recent_messages_kept
         self._long_term = long_term_memory
         self._memory_router = memory_router or MemoryRouter()
+        self._profile = profile_storage
 
     async def run(
         self,
@@ -145,7 +160,10 @@ class JapaneseLearningAgent:
         long_term = self._long_term.load()
         window = build_context(active, history, self._recent_kept, self._memory_layers(state, long_term))
         history_prefix = self._build_history_prefix(window)
-        prompt = self._build_prompt(message, history_prefix)
+        # Read fresh on every request rather than cached at startup: the
+        # profile is meant to be changed between messages and take effect on
+        # the next one.
+        prompt = self._build_prompt(message, history_prefix, self._profile.load().as_section())
 
         # Let a Gemini failure here (including "context window exceeded")
         # propagate as-is - gemini_service already turns a non-200 response
@@ -317,6 +335,35 @@ class JapaneseLearningAgent:
         self._history.save(state)
 
         return self._memory_response(state, self._long_term.load())
+
+    # --- user profile ------------------------------------------------------
+
+    def get_profile(self) -> AgentUserProfile:
+        """The learner's answering preferences as they stand."""
+        return self._profile_response(self._profile.load())
+
+    def update_profile(self, request: AgentUserProfileRequest) -> AgentUserProfile:
+        """Update the profile. A field left out of the request keeps its
+        current value, so a client can change the level without restating
+        the style."""
+        profile = self._profile.load()
+        updated = UserProfile(
+            preferred_language=self._setting(profile.preferred_language, request.preferred_language),
+            japanese_level=self._setting(profile.japanese_level, request.japanese_level),
+            explanation_style=self._setting(profile.explanation_style, request.explanation_style),
+            answer_format=self._setting(profile.answer_format, request.answer_format),
+            translation_language=self._setting(profile.translation_language, request.translation_language),
+            preferences=profile.preferences if request.preferences is None else list(request.preferences),
+        )
+        self._profile.save(updated)
+
+        return self._profile_response(self._profile.load())
+
+    def clear_profile(self) -> AgentUserProfile:
+        """Unset every setting. Touches no memory layer and no message."""
+        self._profile.clear()
+
+        return self._profile_response(self._profile.load())
 
     # --- checkpoints and branches -----------------------------------------
 
@@ -628,6 +675,21 @@ class JapaneseLearningAgent:
         )
 
     @staticmethod
+    def _setting(current: str, requested: str | None) -> str:
+        return current if requested is None else requested.strip()
+
+    @staticmethod
+    def _profile_response(profile: UserProfile) -> AgentUserProfile:
+        return AgentUserProfile(
+            preferred_language=profile.preferred_language,
+            japanese_level=profile.japanese_level,
+            explanation_style=profile.explanation_style,
+            answer_format=profile.answer_format,
+            translation_language=profile.translation_language,
+            preferences=profile.preferences,
+        )
+
+    @staticmethod
     def _build_history_prefix(window: ContextWindow) -> str:
         """Everything that comes before the new message in the prompt - the
         exact text token-counted as "history". Empty when the strategy has
@@ -639,11 +701,21 @@ class JapaneseLearningAgent:
         return "\n\n".join([_INSTRUCTIONS, *window.sections])
 
     @staticmethod
-    def _build_prompt(message: str, history_prefix: str) -> str:
-        if not history_prefix:
-            return f"{_INSTRUCTIONS}\n\nLearner's request: {message}"
+    def _build_prompt(message: str, history_prefix: str, profile_section: str = "") -> str:
+        """Instructions, then what is remembered, then who the learner is,
+        then what they just asked.
 
-        return f"{history_prefix}\n\nLearner's new request: {message}"
+        The profile sits after the context and immediately before the
+        message on purpose. It is the last thing the model reads before the
+        question, and it stays out of the text counted as history - history
+        is what the conversation produced, the profile is a setting that was
+        configured once.
+        """
+        opening = history_prefix or _INSTRUCTIONS
+        request_label = "Learner's new request" if history_prefix else "Learner's request"
+        sections = [opening, profile_section] if profile_section else [opening]
+
+        return "\n\n".join([*sections, f"{request_label}: {message}"])
 
 
 agent = JapaneseLearningAgent()

@@ -16,6 +16,8 @@ from app.schemas.agent import (
     AgentStrategyRequest,
     AgentStrategyResponse,
     AgentUsageResponse,
+    AgentUserProfile,
+    AgentUserProfileRequest,
     AgentWorkingMemoryRequest,
     MemoryLayer,
 )
@@ -104,6 +106,25 @@ async def clear_memory_layer(layer: MemoryLayer) -> AgentMemoryResponse:
     """Empty one layer - short_term, working or long_term - and leave the
     other two exactly as they are."""
     return agent.clear_memory(layer)
+
+
+@router.get("/agent/profile")
+async def agent_profile() -> AgentUserProfile:
+    """How the learner wants to be answered. Read on every chat request, so
+    the preferences never have to be repeated in a message."""
+    return agent.get_profile()
+
+
+@router.put("/agent/profile")
+async def update_agent_profile(request: AgentUserProfileRequest) -> AgentUserProfile:
+    """Update the profile. Fields left out keep their current value."""
+    return agent.update_profile(request)
+
+
+@router.delete("/agent/profile")
+async def clear_agent_profile() -> AgentUserProfile:
+    """Unset every setting. Leaves all three memory layers untouched."""
+    return agent.clear_profile()
 
 
 @router.get("/agent/usage")

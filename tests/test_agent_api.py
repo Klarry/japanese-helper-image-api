@@ -14,6 +14,7 @@ from app.services import agent_memory_router as memory_router_module
 from app.services import japanese_learning_agent as agent_module
 from app.services.agent_history_storage import AgentHistoryStorage
 from app.services.agent_memory import AgentLongTermMemoryStorage
+from app.services.agent_user_profile import AgentUserProfileStorage
 from app.services.agent_usage_log import AgentUsageLog
 from app.services.gemini_service import GeneratedText
 from app.services.japanese_learning_agent import JapaneseLearningAgent
@@ -53,6 +54,11 @@ def _isolate_agent(monkeypatch, tmp_path, compression_enabled=False):
         agent_module.agent,
         "_long_term",
         AgentLongTermMemoryStorage(file_path=str(tmp_path / "long_term.json")),
+    )
+    monkeypatch.setattr(
+        agent_module.agent,
+        "_profile",
+        AgentUserProfileStorage(file_path=str(tmp_path / "profile.json")),
     )
     monkeypatch.setattr(agent_module.agent, "_compression_enabled", compression_enabled)
     return temp_storage
@@ -945,3 +951,237 @@ def test_a_failed_routing_keeps_the_memory_and_still_answers(monkeypatch, tmp_pa
 
     assert response.json()["response"] == "ответ агента"
     assert _memory()["working"]["goals"] == ["составить пример"]
+
+
+# --- user profile (Day 12) -------------------------------------------------
+
+PROFILE_A = {
+    "japanese_level": "N4",
+    "explanation_style": "simple",
+    "answer_format": "short",
+    "translation_language": "Russian",
+    "preferred_language": "Russian",
+}
+PROFILE_B = {
+    "japanese_level": "N2",
+    "explanation_style": "detailed",
+    "answer_format": "detailed",
+    "translation_language": "English",
+    "preferred_language": "English",
+}
+
+
+def _capture_prompts(monkeypatch, response_text="ответ агента"):
+    prompts = []
+
+    async def fake_generate_text_with_usage(prompt, model=None, temperature=None):
+        prompts.append(prompt)
+        return GeneratedText(text=response_text, input_tokens=40, output_tokens=8)
+
+    monkeypatch.setattr(agent_module, "generate_text_with_usage", fake_generate_text_with_usage)
+    return prompts
+
+
+def _set_profile(profile: dict):
+    response = client.put("/agent/profile", json=profile)
+    assert response.status_code == 200
+    return response.json()
+
+
+def test_the_profile_is_applied_without_being_asked_for(monkeypatch, tmp_path):
+    """The learner says nothing about level or format - the request still
+    carries both."""
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+    _set_profile(PROFILE_A)
+
+    client.post("/agent/chat", json={"message": "Объясни слово 学習."})
+
+    assert "N4" not in "Объясни слово 学習."
+    assert "USER PROFILE" in prompts[0]
+    assert "N4" in prompts[0]
+    assert "Answer format: short" in prompts[0]
+
+
+def test_the_same_message_reaches_gemini_differently_for_two_profiles(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+
+    _set_profile(PROFILE_A)
+    client.post("/agent/chat", json={"message": "Объясни слово 学習.", "strategy": "full"})
+    client.delete("/agent/history")
+    _set_profile(dict(PROFILE_B, preferences=[]))
+    client.post("/agent/chat", json={"message": "Объясни слово 学習.", "strategy": "full"})
+
+    first, second = prompts
+    assert first != second
+    assert "N4" in first and "N2" not in first
+    assert "N2" in second and "N4" not in second
+    assert "Translate Japanese into: Russian" in first
+    assert "Translate Japanese into: English" in second
+    # The message itself is identical - the whole difference is the profile.
+    assert first.replace(_profile_block(first), "") == second.replace(_profile_block(second), "")
+
+
+def _profile_block(prompt: str) -> str:
+    """The USER PROFILE section of a prompt, up to the blank line after it."""
+    start = prompt.index("USER PROFILE")
+    return prompt[start : prompt.index("\n\n", start) + 2]
+
+
+def test_the_profile_applies_under_every_strategy(monkeypatch, tmp_path):
+    """It is not a strategy and does not belong to one - it is how the
+    learner wants to be answered, whatever the context strategy is."""
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+    _mock_memory_router(monkeypatch, "{}")
+    _set_profile(PROFILE_A)
+
+    for strategy in ("full", "sliding_window", "sticky_facts", "branching", "layered_memory"):
+        client.post("/agent/chat", json={"message": "Объясни слово 学習.", "strategy": strategy})
+
+    assert len(prompts) == 5
+    assert all("USER PROFILE" in prompt and "N4" in prompt for prompt in prompts)
+
+
+def test_without_a_profile_nothing_is_added_to_the_prompt(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+
+    client.post("/agent/chat", json={"message": "Объясни слово 学習."})
+
+    assert "USER PROFILE" not in prompts[0]
+
+
+def test_the_profile_comes_after_the_context_and_before_the_message(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+    _set_profile(PROFILE_A)
+    client.post("/agent/chat", json={"message": "Первый вопрос.", "strategy": "full"})
+
+    client.post("/agent/chat", json={"message": "Второй вопрос.", "strategy": "full"})
+
+    prompt = prompts[-1]
+    assert prompt.index("Conversation so far:") < prompt.index("USER PROFILE")
+    assert prompt.index("USER PROFILE") < prompt.index("Learner's new request: Второй вопрос.")
+
+
+def test_the_profile_is_not_counted_as_conversation_history(monkeypatch, tmp_path):
+    """History is what the conversation produced; the profile is a setting,
+    so turning one on must not inflate the history token count."""
+    _isolate_agent(monkeypatch, tmp_path)
+    _capture_prompts(monkeypatch)
+
+    async def fake_count_tokens(text, model=None):
+        return len(text)
+
+    monkeypatch.setattr(agent_module, "count_tokens", fake_count_tokens)
+    client.post("/agent/chat", json={"message": "Первый вопрос.", "strategy": "full"})
+    without_profile = client.post(
+        "/agent/chat", json={"message": "Второй вопрос.", "strategy": "full"}
+    ).json()["usage"]["history_tokens"]
+
+    _set_profile(PROFILE_A)
+    with_profile = client.post(
+        "/agent/chat", json={"message": "Второй вопрос.", "strategy": "full"}
+    ).json()["usage"]["history_tokens"]
+
+    # The conversation grew by one exchange between the two measurements, so
+    # history grew - but by the exchange, not by the profile.
+    assert with_profile > without_profile
+    assert "N4" not in client.get("/agent/context").json()["context"]
+
+
+def test_the_profile_never_becomes_part_of_the_conversation(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "ответ агента")
+    _mock_count_tokens(monkeypatch, 90)
+    _mock_memory_router(monkeypatch, "{}")
+    _set_profile(PROFILE_A)
+
+    client.post("/agent/chat", json={"message": "Объясни слово 学習.", "strategy": "layered_memory"})
+    history = client.get("/agent/history").json()["messages"]
+    memory = client.get("/agent/memory").json()
+
+    assert [entry["content"] for entry in history] == ["Объясни слово 学習.", "ответ агента"]
+    assert "N4" not in str(memory["working"])
+    assert "N4" not in str(memory["long_term"])
+
+
+def test_clearing_memory_and_history_leaves_the_profile_alone(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _set_profile(PROFILE_A)
+
+    client.delete("/agent/history")
+    for layer in ("short_term", "working", "long_term"):
+        client.delete(f"/agent/memory/{layer}")
+
+    assert client.get("/agent/profile").json()["japanese_level"] == "N4"
+
+
+def test_clearing_the_profile_leaves_the_memory_layers_alone(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _set_profile(PROFILE_A)
+    client.put("/agent/memory/working", json={"constraints": ["уровень N4"]})
+    client.put("/agent/memory/long_term", json={"profile": {"favorite_word": "学習"}})
+
+    cleared = client.delete("/agent/profile").json()
+    memory = client.get("/agent/memory").json()
+
+    assert cleared == {
+        "preferred_language": "",
+        "japanese_level": "",
+        "explanation_style": "",
+        "answer_format": "",
+        "translation_language": "",
+        "preferences": [],
+    }
+    assert memory["working"]["constraints"] == ["уровень N4"]
+    assert memory["long_term"]["profile"] == {"favorite_word": "学習"}
+
+
+def test_updating_one_setting_keeps_the_rest(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _set_profile(PROFILE_A)
+
+    updated = client.put("/agent/profile", json={"japanese_level": "N2"}).json()
+
+    assert updated["japanese_level"] == "N2"
+    assert updated["answer_format"] == "short"
+    assert updated["translation_language"] == "Russian"
+
+
+def test_extra_preferences_are_kept_and_applied(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+    _set_profile(dict(PROFILE_A, preferences=["без ромадзи", "примеры из жизни"]))
+
+    client.post("/agent/chat", json={"message": "Объясни слово 学習."})
+
+    assert "- Also: без ромадзи" in prompts[0]
+    assert "- Also: примеры из жизни" in prompts[0]
+
+
+def test_the_profile_survives_a_restart(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+    _set_profile(PROFILE_A)
+
+    monkeypatch.setattr(
+        agent_module.agent,
+        "_profile",
+        AgentUserProfileStorage(file_path=str(tmp_path / "profile.json")),
+    )
+    body = client.get("/agent/profile").json()
+    client.post("/agent/chat", json={"message": "Объясни слово 学習."})
+
+    assert body["japanese_level"] == "N4"
+    assert body["translation_language"] == "Russian"
+    assert "N4" in prompts[0]
