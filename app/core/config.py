@@ -80,3 +80,15 @@ AGENT_MEMORY_ENTRY_LIMIT = int(os.getenv("AGENT_MEMORY_ENTRY_LIMIT", "10"))
 AGENT_USER_PROFILE_FILE_PATH = os.getenv("AGENT_USER_PROFILE_FILE_PATH", "data/agent_user_profile.json")
 # How many free-form extra preferences the profile keeps.
 AGENT_PROFILE_PREFERENCES_LIMIT = int(os.getenv("AGENT_PROFILE_PREFERENCES_LIMIT", "10"))
+
+# --- Agent task state machine (Day 13) -------------------------------------
+# Tracking where a task has got to costs one extra Gemini call per message,
+# the same way keeping facts or routing memory does. On by default because
+# the state machine is only useful if it is kept up to date; the flag exists
+# so the earlier days' token comparisons can be re-run without it.
+AGENT_TASK_TRACKING_ENABLED = os.getenv("AGENT_TASK_TRACKING_ENABLED", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}

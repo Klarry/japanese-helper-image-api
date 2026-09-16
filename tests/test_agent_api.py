@@ -11,6 +11,7 @@ from app.schemas.agent import (
 from app.services import agent_facts_extractor as facts_module
 from app.services import agent_history_compressor as compressor_module
 from app.services import agent_memory_router as memory_router_module
+from app.services import agent_task_tracker as task_tracker_module
 from app.services import japanese_learning_agent as agent_module
 from app.services.agent_history_storage import AgentHistoryStorage
 from app.services.agent_memory import AgentLongTermMemoryStorage
@@ -61,6 +62,9 @@ def _isolate_agent(monkeypatch, tmp_path, compression_enabled=False):
         AgentUserProfileStorage(file_path=str(tmp_path / "profile.json")),
     )
     monkeypatch.setattr(agent_module.agent, "_compression_enabled", compression_enabled)
+    # Off unless a test is about it, so no other test pays for the extra
+    # Gemini call - the same rule the compression flag above follows.
+    monkeypatch.setattr(agent_module.agent, "_task_tracking_enabled", False)
     return temp_storage
 
 
@@ -1185,3 +1189,264 @@ def test_the_profile_survives_a_restart(monkeypatch, tmp_path):
     assert body["japanese_level"] == "N4"
     assert body["translation_language"] == "Russian"
     assert "N4" in prompts[0]
+
+
+# --- task state machine (Day 13) -------------------------------------------
+
+
+def _mock_task_tracker(monkeypatch, *answers: str):
+    """Turn tracking on for this test and answer the tracker's Gemini call
+    with each JSON in turn, repeating the last one."""
+    monkeypatch.setattr(agent_module.agent, "_task_tracking_enabled", True)
+    queue = list(answers) or ["{}"]
+
+    async def fake_generate_text_with_usage(prompt, model=None, temperature=None):
+        answer = queue.pop(0) if len(queue) > 1 else queue[0]
+        return GeneratedText(text=answer, input_tokens=160, output_tokens=20)
+
+    monkeypatch.setattr(task_tracker_module, "generate_text_with_usage", fake_generate_text_with_usage)
+
+
+def _task() -> dict:
+    return client.get("/agent/task").json()
+
+
+def test_a_task_starts_in_planning_and_nowhere_else(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "ответ агента")
+    _mock_count_tokens(monkeypatch, 90)
+    _mock_task_tracker(
+        monkeypatch,
+        '{"task_stage": "planning", "current_step": "составляем план",'
+        ' "expected_action": "согласовать план"}',
+    )
+
+    client.post("/agent/chat", json={"message": "Давай составим план по грамматике N4."})
+
+    assert _task() == {
+        "task_stage": "planning",
+        "current_step": "составляем план",
+        "expected_action": "согласовать план",
+        "allowed_next": ["execution"],
+    }
+
+
+def test_an_ordinary_question_starts_no_task(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "ответ агента")
+    _mock_count_tokens(monkeypatch, 90)
+    _mock_task_tracker(monkeypatch, '{"task_stage": "idle"}')
+
+    client.post("/agent/chat", json={"message": "Что значит 学習?"})
+
+    assert _task()["task_stage"] == "idle"
+    assert _task()["allowed_next"] == ["planning"]
+
+
+def test_a_task_cannot_skip_a_stage_however_the_model_answers(monkeypatch, tmp_path):
+    """The tracker proposes; the state machine decides. A jump from planning
+    to done leaves the task exactly where it was."""
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "ответ агента")
+    _mock_count_tokens(monkeypatch, 90)
+    _mock_task_tracker(
+        monkeypatch,
+        '{"task_stage": "planning", "current_step": "составляем план", "expected_action": "начать"}',
+        '{"task_stage": "done", "current_step": "всё готово", "expected_action": "поздравить"}',
+    )
+    client.post("/agent/chat", json={"message": "Давай составим план."})
+
+    client.post("/agent/chat", json={"message": "Всё, заканчиваем."})
+
+    assert _task()["task_stage"] == "planning"
+    assert _task()["current_step"] == "составляем план"
+
+
+def test_the_task_state_is_sent_with_every_request(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+    _mock_task_tracker(
+        monkeypatch,
+        '{"task_stage": "planning", "current_step": "составляем план", "expected_action": "начать"}',
+    )
+    client.post("/agent/chat", json={"message": "Давай составим план."})
+
+    client.post("/agent/chat", json={"message": "Продолжим."})
+
+    prompt = prompts[-1]
+    assert "TASK STATE" in prompt
+    assert "- Stage: planning" in prompt
+    assert "- Current step: составляем план" in prompt
+
+
+def test_the_task_state_comes_last_before_the_message(monkeypatch, tmp_path):
+    """"Carry on from this step" is the last thing the model reads before
+    the question."""
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+    _set_profile(PROFILE_A)
+    _mock_task_tracker(
+        monkeypatch, '{"task_stage": "planning", "current_step": "составляем план"}'
+    )
+    client.post("/agent/chat", json={"message": "Давай составим план.", "strategy": "full"})
+
+    client.post("/agent/chat", json={"message": "Продолжим.", "strategy": "full"})
+
+    prompt = prompts[-1]
+    assert prompt.index("Conversation so far:") < prompt.index("USER PROFILE")
+    assert prompt.index("USER PROFILE") < prompt.index("TASK STATE")
+    assert prompt.index("TASK STATE") < prompt.index("Learner's new request: Продолжим.")
+
+
+def test_an_idle_task_adds_nothing_to_the_prompt(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+    _mock_task_tracker(monkeypatch, '{"task_stage": "idle"}')
+
+    client.post("/agent/chat", json={"message": "Что значит 学習?"})
+
+    assert "TASK STATE" not in prompts[0]
+
+
+def test_tracking_is_recorded_as_its_own_token_cost(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "ответ", input_tokens=40, output_tokens=8)
+    _mock_count_tokens(monkeypatch, 25)
+    _mock_task_tracker(monkeypatch, '{"task_stage": "planning", "current_step": "план"}')
+
+    client.post("/agent/chat", json={"message": "Давай составим план."})
+    entry = client.get("/agent/usage").json()["entries"][-1]
+
+    assert entry["task_tokens"] == 180
+    assert entry["total_tokens"] == 48
+
+
+def test_a_failed_tracking_keeps_the_task_where_it_was_and_still_answers(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "ответ агента")
+    _mock_count_tokens(monkeypatch, 90)
+    _mock_task_tracker(monkeypatch, '{"task_stage": "planning", "current_step": "составляем план"}')
+    client.post("/agent/chat", json={"message": "Давай составим план."})
+    _mock_task_tracker(monkeypatch, "конечно, продолжаем!")
+
+    response = client.post("/agent/chat", json={"message": "Продолжим."})
+
+    assert response.json()["response"] == "ответ агента"
+    assert _task()["current_step"] == "составляем план"
+
+
+def test_clearing_the_task_leaves_the_conversation_and_everything_else_alone(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "ответ агента")
+    _mock_count_tokens(monkeypatch, 90)
+    _set_profile(PROFILE_A)
+    client.put("/agent/memory/working", json={"constraints": ["уровень N4"]})
+    _mock_task_tracker(monkeypatch, '{"task_stage": "planning", "current_step": "составляем план"}')
+    client.post("/agent/chat", json={"message": "Давай составим план."})
+
+    cleared = client.delete("/agent/task").json()
+
+    assert cleared == {
+        "task_stage": "idle",
+        "current_step": "",
+        "expected_action": "",
+        "allowed_next": ["planning"],
+    }
+    assert len(client.get("/agent/history").json()["messages"]) == 2
+    assert client.get("/agent/memory").json()["working"]["constraints"] == ["уровень N4"]
+    assert client.get("/agent/profile").json()["japanese_level"] == "N4"
+
+
+def test_clearing_the_conversation_ends_the_task_with_it(monkeypatch, tmp_path):
+    """The task belongs to the conversation, like the working memory."""
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "ответ агента")
+    _mock_count_tokens(monkeypatch, 90)
+    _mock_task_tracker(monkeypatch, '{"task_stage": "planning", "current_step": "составляем план"}')
+    client.post("/agent/chat", json={"message": "Давай составим план."})
+
+    client.delete("/agent/history")
+
+    assert _task()["task_stage"] == "idle"
+
+
+def test_the_task_never_becomes_part_of_the_conversation_or_the_memory(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "ответ агента")
+    _mock_count_tokens(monkeypatch, 90)
+    _mock_memory_router(monkeypatch, "{}")
+    _mock_task_tracker(
+        monkeypatch, '{"task_stage": "planning", "current_step": "составляем план N4"}'
+    )
+
+    client.post("/agent/chat", json={"message": "Давай составим план.", "strategy": "layered_memory"})
+    history = client.get("/agent/history").json()["messages"]
+    memory = client.get("/agent/memory").json()
+
+    assert [entry["content"] for entry in history] == ["Давай составим план.", "ответ агента"]
+    assert "составляем план N4" not in str(memory)
+
+
+def test_the_eight_step_scenario(monkeypatch, tmp_path):
+    """Start a task, move it to execution, pause, restart the app, carry on
+    from the step it was on, validate, finish."""
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+
+    # 1-2. start the task, then move planning -> execution
+    _mock_task_tracker(
+        monkeypatch,
+        '{"task_stage": "planning", "current_step": "план из 4 шагов",'
+        ' "expected_action": "согласовать план"}',
+        '{"task_stage": "execution", "current_step": "шаг 2 из 4 — предложения с 〜ながら",'
+        ' "expected_action": "показать пять предложений"}',
+    )
+    client.post("/agent/chat", json={"message": "Давай составим план по грамматике N4."})
+    assert _task()["task_stage"] == "planning"
+    client.post("/agent/chat", json={"message": "План подходит, приступаем."})
+    assert _task()["task_stage"] == "execution"
+
+    # 3-4. pause and restart: a brand new storage instance over the same file
+    paused = _task()
+    monkeypatch.setattr(
+        agent_module.agent, "_history", AgentHistoryStorage(file_path=str(tmp_path / "history.json"))
+    )
+
+    # 5. execution came back, with the step it was on
+    assert _task() == paused
+    assert _task()["task_stage"] == "execution"
+    assert _task()["current_step"] == "шаг 2 из 4 — предложения с 〜ながら"
+
+    # 6. carry on: the request says where the task is, not what it was about
+    _mock_task_tracker(
+        monkeypatch,
+        '{"task_stage": "execution", "current_step": "шаг 3 из 4 — разбор ошибок",'
+        ' "expected_action": "исправить предложения"}',
+    )
+    client.post("/agent/chat", json={"message": "Продолжаем."})
+    resumed = prompts[-1]
+    assert "- Stage: execution" in resumed
+    assert "шаг 2 из 4 — предложения с 〜ながら" in resumed
+    assert "do not repeat explanations already given" in resumed
+
+    # 7. validation
+    _mock_task_tracker(
+        monkeypatch,
+        '{"task_stage": "validation", "current_step": "проверяем предложения",'
+        ' "expected_action": "подтвердить, что всё верно"}',
+    )
+    client.post("/agent/chat", json={"message": "Проверь, что получилось."})
+    assert _task()["task_stage"] == "validation"
+    assert _task()["allowed_next"] == ["done"]
+
+    # 8. done
+    _mock_task_tracker(
+        monkeypatch, '{"task_stage": "done", "current_step": "задача завершена", "expected_action": ""}'
+    )
+    client.post("/agent/chat", json={"message": "Отлично, всё верно. Закончили."})
+    assert _task()["task_stage"] == "done"
+    assert _task()["allowed_next"] == []

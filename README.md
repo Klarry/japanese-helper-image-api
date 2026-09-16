@@ -61,8 +61,8 @@ Paths for the agent's files (`AGENT_HISTORY_FILE_PATH`,
 `AGENT_LONG_TERM_MEMORY_FILE_PATH`, `AGENT_USAGE_LOG_FILE_PATH`) and the sizes
 of its memories (`AGENT_RECENT_MESSAGES_KEPT`, `AGENT_SUMMARY_UPDATE_THRESHOLD`,
 `AGENT_FACTS_LIMIT`, `AGENT_MEMORY_ENTRY_LIMIT`, `AGENT_USER_PROFILE_FILE_PATH`,
-`AGENT_PROFILE_PREFERENCES_LIMIT`) are all overridable the same way, and all have
-working defaults.
+`AGENT_PROFILE_PREFERENCES_LIMIT`, `AGENT_TASK_TRACKING_ENABLED`) are all
+overridable the same way, and all have working defaults.
 
 `GEMINI_API_KEY` is read server-side only, in `app/core/config.py`, and is never
 returned to a client or written to logs.
@@ -215,6 +215,44 @@ Keeping it apart cuts both ways - clearing the conversation or any memory layer
 leaves the profile alone, and setting a profile puts no words into a
 conversation the learner never had. Same request, two profiles, two different
 answers: the only difference in what reaches Gemini is that block.
+
+### Task state machine
+
+Memory says what was said and the profile says how to answer; neither says what
+the learner and the agent are in the middle of. A task has stages, and they only
+ever go one way:
+
+```
+planning -> execution -> validation -> done
+```
+
+Those three moves, plus starting a task (`idle -> planning`) and staying put, are
+the only legal ones. Skipping validation, going back to planning halfway through
+execution, or reopening a finished task are all refused - and refused whole: a
+proposal that jumps to `done` describes a task that ended, so keeping its step
+text while rejecting its stage would leave the two contradicting each other.
+
+Alongside the stage, `current_step` says what is being done now and
+`expected_action` what should happen next. All three travel with the conversation
+in `data/agent_history.json`, beside the branches and never inside a transcript,
+so a task survives the app being closed and ends when the conversation is cleared.
+
+Where the task has got to is *proposed* by `TaskTracker` - one call through the
+same `gemini_service`, recorded separately as `task_tokens` - and accepted only
+if the state machine allows that move, so a confused answer can never put the
+task somewhere impossible. Like every other extra call here it is best-effort: a
+failed update leaves the task exactly where it was.
+
+- `GET /agent/task` returns the stage, both step fields, and `allowed_next` - the
+  machine reported rather than documented, so a client never guesses.
+- `DELETE /agent/task` ends the task and leaves the conversation, the memory
+  layers and the profile untouched.
+
+While a task is running its state is sent as a `TASK STATE` block, last of all,
+immediately before the new message: "carry on from this exact step, do not start
+over" is the final thing the model reads. An idle task sends nothing. Tracking
+can be switched off with `AGENT_TASK_TRACKING_ENABLED=false`, which is how the
+earlier days' token comparisons are re-run without the extra call.
 
 The summary and the recent messages are persisted together in
 `data/agent_history.json`, so a restart resumes the conversation either way,

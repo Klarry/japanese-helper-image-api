@@ -231,6 +231,20 @@ class AgentUserProfileRequest(BaseModel):
     preferences: list[str] | None = None
 
 
+class AgentTaskStateResponse(BaseModel):
+    """Where the task in progress has got to, and where it may go next.
+
+    ``allowed_next`` is the state machine itself, reported rather than
+    documented: a client never has to guess which move is legal, and an
+    empty list means the task is finished (or there is none).
+    """
+
+    task_stage: str = "idle"
+    current_step: str = ""
+    expected_action: str = ""
+    allowed_next: list[str] = []
+
+
 class AgentUsageEntry(BaseModel):
     """One recorded /agent/chat call. Every field has a default so a record
     written by an older version of the app still reads back cleanly."""
@@ -247,6 +261,7 @@ class AgentUsageEntry(BaseModel):
     summarization_tokens: int = 0
     facts_tokens: int = 0
     memory_tokens: int = 0
+    task_tokens: int = 0
 
 
 class AgentUsageResponse(BaseModel):

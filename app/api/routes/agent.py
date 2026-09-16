@@ -15,6 +15,7 @@ from app.schemas.agent import (
     AgentShortTermMemoryRequest,
     AgentStrategyRequest,
     AgentStrategyResponse,
+    AgentTaskStateResponse,
     AgentUsageResponse,
     AgentUserProfile,
     AgentUserProfileRequest,
@@ -125,6 +126,20 @@ async def update_agent_profile(request: AgentUserProfileRequest) -> AgentUserPro
 async def clear_agent_profile() -> AgentUserProfile:
     """Unset every setting. Leaves all three memory layers untouched."""
     return agent.clear_profile()
+
+
+@router.get("/agent/task")
+async def agent_task_state() -> AgentTaskStateResponse:
+    """Where the task in progress has got to, and which stages it may move
+    to from here."""
+    return agent.get_task_state()
+
+
+@router.delete("/agent/task")
+async def clear_agent_task_state() -> AgentTaskStateResponse:
+    """End the task. The conversation, the memory layers and the profile are
+    left untouched."""
+    return agent.clear_task_state()
 
 
 @router.get("/agent/usage")

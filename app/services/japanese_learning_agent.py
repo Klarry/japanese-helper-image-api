@@ -13,7 +13,11 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException
 
-from app.core.config import AGENT_COMPRESSION_ENABLED, AGENT_RECENT_MESSAGES_KEPT
+from app.core.config import (
+    AGENT_COMPRESSION_ENABLED,
+    AGENT_RECENT_MESSAGES_KEPT,
+    AGENT_TASK_TRACKING_ENABLED,
+)
 from app.schemas.agent import (
     AgentBranchResponse,
     AgentChatResponse,
@@ -26,6 +30,7 @@ from app.schemas.agent import (
     AgentMemoryResponse,
     AgentShortTermMemory,
     AgentStrategyResponse,
+    AgentTaskStateResponse,
     AgentTokenUsage,
     AgentUserProfile,
     AgentUserProfileRequest,
@@ -54,6 +59,8 @@ from app.services.agent_memory import (
     long_term_storage,
 )
 from app.services.agent_memory_router import MemoryRouter
+from app.services.agent_task_state import TaskState, allowed_next
+from app.services.agent_task_tracker import TaskTracker
 from app.services.agent_user_profile import (
     AgentUserProfileStorage,
     UserProfile,
@@ -113,6 +120,14 @@ class JapaneseLearningAgent:
     repeat it. It sits between the context and the new message, which keeps
     it out of the history token count - it is not history, it is a setting.
 
+    The task state (see agent_task_state) is the third thing that is not a
+    strategy: it says where the work has got to - planning, execution,
+    validation, done - and travels with the conversation so a task survives
+    the app being closed. It is sent last, right before the new message, so
+    "carry on from this step" is the final thing the model reads. Where a
+    task stands is proposed by TaskTracker and accepted only if the state
+    machine allows that move.
+
     Token usage: Gemini's generateContent/Interactions response reports one
     combined prompt-token count for everything sent (instructions + context
     + the new message), not a breakdown. To report context tokens and
@@ -136,6 +151,8 @@ class JapaneseLearningAgent:
         long_term_memory: AgentLongTermMemoryStorage = long_term_storage,
         memory_router: MemoryRouter | None = None,
         profile_storage: AgentUserProfileStorage = user_profile_storage,
+        task_tracker: TaskTracker | None = None,
+        task_tracking_enabled: bool = AGENT_TASK_TRACKING_ENABLED,
     ) -> None:
         self._history = history_storage
         self._usage_log = usage_log
@@ -146,6 +163,8 @@ class JapaneseLearningAgent:
         self._long_term = long_term_memory
         self._memory_router = memory_router or MemoryRouter()
         self._profile = profile_storage
+        self._task_tracker = task_tracker or TaskTracker()
+        self._task_tracking_enabled = task_tracking_enabled
 
     async def run(
         self,
@@ -163,7 +182,12 @@ class JapaneseLearningAgent:
         # Read fresh on every request rather than cached at startup: the
         # profile is meant to be changed between messages and take effect on
         # the next one.
-        prompt = self._build_prompt(message, history_prefix, self._profile.load().as_section())
+        prompt = self._build_prompt(
+            message,
+            history_prefix,
+            self._profile.load().as_section(),
+            state.task_state.as_section(),
+        )
 
         # Let a Gemini failure here (including "context window exceeded")
         # propagate as-is - gemini_service already turns a non-200 response
@@ -189,10 +213,18 @@ class JapaneseLearningAgent:
         summarization_tokens = await self._compress_if_due(history, active)
         facts_tokens = await self._refresh_facts(history, message, active)
         memory_tokens = await self._route_memory(state, long_term, message, active)
+        task_tokens = await self._track_task(state, message)
         self._history.save(state)
 
         self._record_usage(
-            usage, active, sent_context, summary_used, summarization_tokens, facts_tokens, memory_tokens
+            usage,
+            active,
+            sent_context,
+            summary_used,
+            summarization_tokens,
+            facts_tokens,
+            memory_tokens,
+            task_tokens,
         )
 
         return AgentChatResponse(
@@ -364,6 +396,24 @@ class JapaneseLearningAgent:
         self._profile.clear()
 
         return self._profile_response(self._profile.load())
+
+    # --- task state --------------------------------------------------------
+
+    def get_task_state(self) -> AgentTaskStateResponse:
+        """Where the task in progress has got to, and which moves are legal
+        from here."""
+        return self._task_response(self._history.load().task_state)
+
+    def clear_task_state(self) -> AgentTaskStateResponse:
+        """End the task. The conversation, the memory layers and the profile
+        are all left alone - only the task is forgotten, which is what makes
+        starting a new one from a clean stage possible without throwing away
+        everything else."""
+        state = self._history.load()
+        state.task_state = TaskState()
+        self._history.save(state)
+
+        return self._task_response(state.task_state)
 
     # --- checkpoints and branches -----------------------------------------
 
@@ -550,6 +600,39 @@ class JapaneseLearningAgent:
 
         return routing.tokens_used
 
+    async def _track_task(self, state: ConversationState, message: str) -> int:
+        """Move the task on, if the learner's message calls for it.
+
+        The tracker only proposes; TaskState.with_update accepts the move
+        only when the state machine allows it, so a proposal to skip a stage
+        changes nothing. Best-effort, like every other extra call here: a
+        failed update leaves the task exactly where it was and is retried on
+        the next message rather than failing an answer that already worked.
+        """
+        if not self._task_tracking_enabled:
+            return 0
+
+        try:
+            update = await self._task_tracker.track(message, state.task_state)
+        except Exception as error:  # noqa: BLE001 - see docstring
+            logger.warning("Could not track the task state: %s", error)
+            return 0
+
+        state.task_state = state.task_state.with_update(
+            update.stage, update.current_step, update.expected_action
+        )
+
+        return update.tokens_used
+
+    @staticmethod
+    def _task_response(task_state: TaskState) -> AgentTaskStateResponse:
+        return AgentTaskStateResponse(
+            task_stage=task_state.stage.value,
+            current_step=task_state.current_step,
+            expected_action=task_state.expected_action,
+            allowed_next=allowed_next(task_state.stage),
+        )
+
     @staticmethod
     def _memory_layers(state: ConversationState, long_term: LongTermMemory) -> MemoryLayers:
         """The three layers assembled from the three places they are kept."""
@@ -593,6 +676,7 @@ class JapaneseLearningAgent:
         summarization_tokens: int,
         facts_tokens: int,
         memory_tokens: int = 0,
+        task_tokens: int = 0,
     ) -> None:
         """Persist what this request cost and which strategy produced it, so
         the strategies can be compared afterwards. Instrumentation only - a
@@ -610,6 +694,7 @@ class JapaneseLearningAgent:
             "summarization_tokens": summarization_tokens,
             "facts_tokens": facts_tokens,
             "memory_tokens": memory_tokens,
+            "task_tokens": task_tokens,
         }
 
         try:
@@ -701,21 +786,27 @@ class JapaneseLearningAgent:
         return "\n\n".join([_INSTRUCTIONS, *window.sections])
 
     @staticmethod
-    def _build_prompt(message: str, history_prefix: str, profile_section: str = "") -> str:
+    def _build_prompt(
+        message: str,
+        history_prefix: str,
+        profile_section: str = "",
+        task_section: str = "",
+    ) -> str:
         """Instructions, then what is remembered, then who the learner is,
-        then what they just asked.
+        then where the task stands, then what they just asked.
 
-        The profile sits after the context and immediately before the
-        message on purpose. It is the last thing the model reads before the
-        question, and it stays out of the text counted as history - history
-        is what the conversation produced, the profile is a setting that was
-        configured once.
+        The profile and the task state sit after the context and immediately
+        before the message on purpose: they are the last things the model
+        reads before the question, and they stay out of the text counted as
+        history - history is what the conversation produced, while these two
+        are a setting and a position. The task state goes last of all, so
+        "carry on from this step" is what the question lands on.
         """
         opening = history_prefix or _INSTRUCTIONS
         request_label = "Learner's new request" if history_prefix else "Learner's request"
-        sections = [opening, profile_section] if profile_section else [opening]
+        sections = [opening, profile_section, task_section]
 
-        return "\n\n".join([*sections, f"{request_label}: {message}"])
+        return "\n\n".join([*(section for section in sections if section), f"{request_label}: {message}"])
 
 
 agent = JapaneseLearningAgent()

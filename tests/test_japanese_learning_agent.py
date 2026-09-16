@@ -56,14 +56,16 @@ def _generated(text="answer", input_tokens=10, output_tokens=5):
 
 
 def _agent(tmp_path, name="history.json", compression_enabled=False, **compressor_kwargs):
-    """An agent wired to throwaway files. Compression is stated explicitly
-    rather than inherited from the environment, so these tests mean the same
-    thing whatever AGENT_COMPRESSION_ENABLED happens to be set to."""
+    """An agent wired to throwaway files. Compression and task tracking are
+    stated explicitly rather than inherited from the environment, so these
+    tests mean the same thing whatever the env flags happen to be set to -
+    and so nothing here makes the extra Gemini call task tracking would."""
     return JapaneseLearningAgent(
         history_storage=AgentHistoryStorage(file_path=str(tmp_path / name)),
         usage_log=AgentUsageLog(file_path=str(tmp_path / f"usage-{name}")),
         compressor=HistoryCompressor(**compressor_kwargs) if compressor_kwargs else None,
         compression_enabled=compression_enabled,
+        task_tracking_enabled=False,
     )
 
 
@@ -159,11 +161,15 @@ def test_run_includes_previous_turns_in_the_next_gemini_request(monkeypatch, tmp
 def test_history_survives_agent_recreation(monkeypatch, tmp_path):
     _stub_generate(monkeypatch, lambda prompt: _generated())
     file_path = str(tmp_path / "history.json")
-    first_agent = JapaneseLearningAgent(history_storage=AgentHistoryStorage(file_path=file_path))
+    first_agent = JapaneseLearningAgent(
+        history_storage=AgentHistoryStorage(file_path=file_path), task_tracking_enabled=False
+    )
 
     asyncio.run(first_agent.run("Explain the kanji 学."))
 
-    restarted_agent = JapaneseLearningAgent(history_storage=AgentHistoryStorage(file_path=file_path))
+    restarted_agent = JapaneseLearningAgent(
+        history_storage=AgentHistoryStorage(file_path=file_path), task_tracking_enabled=False
+    )
 
     assert restarted_agent.get_history().messages == [
         {"role": "user", "content": "Explain the kanji 学."},

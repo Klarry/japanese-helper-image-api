@@ -20,7 +20,9 @@ diverge without touching each other.
       },
       "checkpoints": {"cp-1": {"branch": "main", "history": {...}}},
       "working_memory": {"goals": [...], "requirements": [...],
-                         "constraints": [...], "decisions": [...]}
+                         "constraints": [...], "decisions": [...]},
+      "task_state": {"task_stage": "execution", "current_step": "...",
+                     "expected_action": "..."}
     }
 
 A file written before branches existed holds a single conversation at the
@@ -40,6 +42,7 @@ from typing import Any, TypedDict
 
 from app.core.config import AGENT_HISTORY_FILE_PATH
 from app.services.agent_memory import WorkingMemory, working_memory_as_json, working_memory_from_json
+from app.services.agent_task_state import TaskState, task_state_as_json, task_state_from_json
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +107,10 @@ class ConversationState:
     )
     checkpoints: dict[str, Checkpoint] = field(default_factory=dict)
     working_memory: "WorkingMemory" = field(default_factory=lambda: WorkingMemory())
+    # Where the task in progress has got to. Task-scoped like the working
+    # memory above and stored the same way - beside the branches, never
+    # inside a transcript - so ending the conversation ends the task.
+    task_state: "TaskState" = field(default_factory=lambda: TaskState())
 
     def current(self) -> ConversationHistory:
         """The branch being talked on. Created empty if it somehow went
@@ -253,6 +260,7 @@ class AgentHistoryStorage:
             branches=branches,
             checkpoints=checkpoints,
             working_memory=working_memory_from_json(data.get("working_memory")),
+            task_state=task_state_from_json(data.get("task_state")),
         )
 
     def save(self, state: ConversationState) -> None:
@@ -271,6 +279,7 @@ class AgentHistoryStorage:
                         for name, saved in state.checkpoints.items()
                     },
                     "working_memory": working_memory_as_json(state.working_memory),
+                    "task_state": task_state_as_json(state.task_state),
                 },
                 ensure_ascii=False,
                 indent=2,
