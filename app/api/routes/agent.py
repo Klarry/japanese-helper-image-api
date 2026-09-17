@@ -10,6 +10,8 @@ from app.schemas.agent import (
     AgentCheckpointResponse,
     AgentContextResponse,
     AgentHistoryResponse,
+    AgentInvariantRequest,
+    AgentInvariantsResponse,
     AgentLongTermMemoryRequest,
     AgentMemoryResponse,
     AgentShortTermMemoryRequest,
@@ -126,6 +128,34 @@ async def update_agent_profile(request: AgentUserProfileRequest) -> AgentUserPro
 async def clear_agent_profile() -> AgentUserProfile:
     """Unset every setting. Leaves all three memory layers untouched."""
     return agent.clear_profile()
+
+
+@router.get("/agent/invariants")
+async def agent_invariants() -> AgentInvariantsResponse:
+    """Every rule the agent is bound by. Read on every chat request, so a
+    rule added here applies to the next message."""
+    return agent.get_invariants()
+
+
+@router.post("/agent/invariants")
+async def add_agent_invariant(request: AgentInvariantRequest) -> AgentInvariantsResponse:
+    """Add a rule. The id is generated from the category."""
+    return agent.add_invariant(request)
+
+
+@router.put("/agent/invariants/{invariant_id}")
+async def set_agent_invariant(
+    invariant_id: str,
+    request: AgentInvariantRequest,
+) -> AgentInvariantsResponse:
+    """Add or change the rule with this id, keeping its place in the list."""
+    return agent.set_invariant(invariant_id, request)
+
+
+@router.delete("/agent/invariants/{invariant_id}")
+async def delete_agent_invariant(invariant_id: str) -> AgentInvariantsResponse:
+    """Remove one rule. Unknown ids are reported rather than ignored."""
+    return agent.delete_invariant(invariant_id)
 
 
 @router.get("/agent/task")

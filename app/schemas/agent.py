@@ -20,6 +20,18 @@ class ContextStrategy(str, Enum):
     LAYERED_MEMORY = "layered_memory"
 
 
+class InvariantCategory(str, Enum):
+    """The four kinds of rule the invariants layer is made of. A category is
+    part of the contract rather than a label: it says what kind of thing is
+    being constrained, which is what makes a conflict explainable instead of
+    merely refused."""
+
+    ARCHITECTURE = "architecture"
+    TECHNOLOGY_STACK = "technology_stack"
+    TECHNICAL_DECISIONS = "technical_decisions"
+    BUSINESS_RULES = "business_rules"
+
+
 class MemoryLayer(str, Enum):
     """The three layers the agent's memory is made of, kept apart because
     they have different lifetimes: short-term lasts a conversation, working
@@ -229,6 +241,37 @@ class AgentUserProfileRequest(BaseModel):
     answer_format: str | None = None
     translation_language: str | None = None
     preferences: list[str] | None = None
+
+
+class AgentInvariant(BaseModel):
+    """One rule the agent may never break. ``id`` is what makes a single
+    rule changeable or removable without touching the rest."""
+
+    id: str
+    category: str
+    rule: str
+
+
+class AgentInvariantsResponse(BaseModel):
+    invariants: list[AgentInvariant] = []
+
+
+class AgentInvariantRequest(BaseModel):
+    """A rule to add or change. The category is one of the four the layer
+    is made of; an unknown one is rejected rather than stored."""
+
+    category: InvariantCategory
+    rule: str
+
+    @field_validator("rule")
+    @classmethod
+    def rule_must_not_be_blank(cls, value: str) -> str:
+        stripped = value.strip()
+
+        if not stripped:
+            raise ValueError("rule must not be empty")
+
+        return stripped
 
 
 class AgentTaskStateResponse(BaseModel):

@@ -25,6 +25,9 @@ from app.schemas.agent import (
     AgentCompressionStatus,
     AgentContextResponse,
     AgentHistoryMessage,
+    AgentInvariant,
+    AgentInvariantRequest,
+    AgentInvariantsResponse,
     AgentLongTermMemory,
     AgentLongTermMemoryRequest,
     AgentMemoryResponse,
@@ -37,6 +40,7 @@ from app.schemas.agent import (
     AgentWorkingMemory,
     AgentWorkingMemoryRequest,
     ContextStrategy,
+    InvariantCategory,
     MemoryLayer,
 )
 from app.services.agent_context import ContextWindow, build_context
@@ -58,6 +62,12 @@ from app.services.agent_memory import (
     WorkingMemory,
     long_term_storage,
 )
+from app.services.agent_invariants import (
+    AgentInvariantsStorage,
+    Invariant,
+    invariants_storage,
+)
+from app.services.agent_invariants import as_section as invariants_section
 from app.services.agent_memory_router import MemoryRouter
 from app.services.agent_task_state import TaskState, allowed_next
 from app.services.agent_task_tracker import TaskTracker
@@ -128,6 +138,12 @@ class JapaneseLearningAgent:
     task stands is proposed by TaskTracker and accepted only if the state
     machine allows that move.
 
+    The invariants (see agent_invariants) are the fourth: the rules of the
+    project that must never be broken. They are not memory - no conversation
+    writes them and clearing one cannot forget them - and they are sent on
+    every request, ahead of the profile and the task state, together with
+    the protocol for what to do when a request conflicts with one.
+
     Token usage: Gemini's generateContent/Interactions response reports one
     combined prompt-token count for everything sent (instructions + context
     + the new message), not a breakdown. To report context tokens and
@@ -153,6 +169,7 @@ class JapaneseLearningAgent:
         profile_storage: AgentUserProfileStorage = user_profile_storage,
         task_tracker: TaskTracker | None = None,
         task_tracking_enabled: bool = AGENT_TASK_TRACKING_ENABLED,
+        invariants: AgentInvariantsStorage = invariants_storage,
     ) -> None:
         self._history = history_storage
         self._usage_log = usage_log
@@ -165,6 +182,7 @@ class JapaneseLearningAgent:
         self._profile = profile_storage
         self._task_tracker = task_tracker or TaskTracker()
         self._task_tracking_enabled = task_tracking_enabled
+        self._invariants = invariants
 
     async def run(
         self,
@@ -185,6 +203,7 @@ class JapaneseLearningAgent:
         prompt = self._build_prompt(
             message,
             history_prefix,
+            invariants_section(self._invariants.load()),
             self._profile.load().as_section(),
             state.task_state.as_section(),
         )
@@ -396,6 +415,58 @@ class JapaneseLearningAgent:
         self._profile.clear()
 
         return self._profile_response(self._profile.load())
+
+    # --- invariants --------------------------------------------------------
+
+    def get_invariants(self) -> AgentInvariantsResponse:
+        """Every rule the agent is bound by."""
+        return self._invariants_response(self._invariants.load())
+
+    def add_invariant(self, request: AgentInvariantRequest) -> AgentInvariantsResponse:
+        """Add a rule. The id is generated here so a client never has to
+        invent one; PUT is the way to choose it."""
+        invariants = self._invariants.load()
+        invariants.append(
+            Invariant(
+                id=self._next_invariant_id(invariants, request.category),
+                category=request.category,
+                rule=request.rule,
+            )
+        )
+        self._invariants.save(invariants)
+
+        return self._invariants_response(invariants)
+
+    def set_invariant(self, invariant_id: str, request: AgentInvariantRequest) -> AgentInvariantsResponse:
+        """Add or change the rule with this id, keeping its place in the
+        list so the order the rules are read in does not shuffle."""
+        identifier = self._require_name(invariant_id)
+        updated = Invariant(id=identifier, category=request.category, rule=request.rule)
+        invariants = self._invariants.load()
+        existing = next((index for index, item in enumerate(invariants) if item.id == identifier), None)
+
+        if existing is None:
+            invariants.append(updated)
+        else:
+            invariants[existing] = updated
+
+        self._invariants.save(invariants)
+
+        return self._invariants_response(invariants)
+
+    def delete_invariant(self, invariant_id: str) -> AgentInvariantsResponse:
+        """Remove one rule. Deleting a rule that is not there is an error,
+        not a silent success - a rule going missing is worth knowing about."""
+        identifier = self._require_name(invariant_id)
+        invariants = self._invariants.load()
+        remaining = [item for item in invariants if item.id != identifier]
+
+        if len(remaining) == len(invariants):
+            raise HTTPException(status_code=404, detail=f"Invariant '{identifier}' does not exist")
+
+        self._invariants.save(remaining)
+
+        return self._invariants_response(remaining)
 
     # --- task state --------------------------------------------------------
 
@@ -625,6 +696,27 @@ class JapaneseLearningAgent:
         return update.tokens_used
 
     @staticmethod
+    def _invariants_response(invariants: list[Invariant]) -> AgentInvariantsResponse:
+        return AgentInvariantsResponse(
+            invariants=[
+                AgentInvariant(id=item.id, category=item.category.value, rule=item.rule)
+                for item in invariants
+            ]
+        )
+
+    @staticmethod
+    def _next_invariant_id(invariants: list[Invariant], category: InvariantCategory) -> str:
+        """A readable id nobody has to think about: the category and the
+        first number not already taken."""
+        taken = {item.id for item in invariants}
+        index = 1
+
+        while f"{category.value}-{index}" in taken:
+            index += 1
+
+        return f"{category.value}-{index}"
+
+    @staticmethod
     def _task_response(task_state: TaskState) -> AgentTaskStateResponse:
         return AgentTaskStateResponse(
             task_stage=task_state.stage.value,
@@ -789,22 +881,26 @@ class JapaneseLearningAgent:
     def _build_prompt(
         message: str,
         history_prefix: str,
+        invariants: str = "",
         profile_section: str = "",
         task_section: str = "",
     ) -> str:
-        """Instructions, then what is remembered, then who the learner is,
-        then where the task stands, then what they just asked.
+        """Instructions, then what is remembered, then what may never be
+        broken, then who the learner is, then where the task stands, then
+        what they just asked.
 
-        The profile and the task state sit after the context and immediately
-        before the message on purpose: they are the last things the model
-        reads before the question, and they stay out of the text counted as
-        history - history is what the conversation produced, while these two
-        are a setting and a position. The task state goes last of all, so
-        "carry on from this step" is what the question lands on.
+        The last three sit after the context and before the message on
+        purpose: they are what the question lands on, and they stay out of
+        the text counted as history - history is what the conversation
+        produced, while these are rules, a setting and a position. They are
+        ordered from the hardest to the softest: the invariants bind
+        whatever is asked, the profile is a default the learner's own
+        message can override, and the task state says where to carry on
+        from, so it ends up next to the question.
         """
         opening = history_prefix or _INSTRUCTIONS
         request_label = "Learner's new request" if history_prefix else "Learner's request"
-        sections = [opening, profile_section, task_section]
+        sections = [opening, invariants, profile_section, task_section]
 
         return "\n\n".join([*(section for section in sections if section), f"{request_label}: {message}"])
 

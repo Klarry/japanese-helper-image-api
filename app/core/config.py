@@ -92,3 +92,9 @@ AGENT_TASK_TRACKING_ENABLED = os.getenv("AGENT_TASK_TRACKING_ENABLED", "true").s
     "yes",
     "on",
 }
+
+# --- Agent invariants (Day 14) ---------------------------------------------
+# The rules the agent may never break. Their own file, apart from the
+# conversation and from every memory layer: nothing said in a conversation
+# writes them, and clearing a conversation cannot forget them.
+AGENT_INVARIANTS_FILE_PATH = os.getenv("AGENT_INVARIANTS_FILE_PATH", "data/agent_invariants.json")

@@ -14,6 +14,7 @@ from app.services import agent_memory_router as memory_router_module
 from app.services import agent_task_tracker as task_tracker_module
 from app.services import japanese_learning_agent as agent_module
 from app.services.agent_history_storage import AgentHistoryStorage
+from app.services.agent_invariants import AgentInvariantsStorage
 from app.services.agent_memory import AgentLongTermMemoryStorage
 from app.services.agent_user_profile import AgentUserProfileStorage
 from app.services.agent_usage_log import AgentUsageLog
@@ -60,6 +61,11 @@ def _isolate_agent(monkeypatch, tmp_path, compression_enabled=False):
         agent_module.agent,
         "_profile",
         AgentUserProfileStorage(file_path=str(tmp_path / "profile.json")),
+    )
+    monkeypatch.setattr(
+        agent_module.agent,
+        "_invariants",
+        AgentInvariantsStorage(file_path=str(tmp_path / "invariants.json")),
     )
     monkeypatch.setattr(agent_module.agent, "_compression_enabled", compression_enabled)
     # Off unless a test is about it, so no other test pays for the extra
@@ -1450,3 +1456,243 @@ def test_the_eight_step_scenario(monkeypatch, tmp_path):
     client.post("/agent/chat", json={"message": "Отлично, всё верно. Закончили."})
     assert _task()["task_stage"] == "done"
     assert _task()["allowed_next"] == []
+
+
+# --- invariants (Day 14) ---------------------------------------------------
+
+
+def _invariants() -> list[dict]:
+    return client.get("/agent/invariants").json()["invariants"]
+
+
+def _ids() -> list[str]:
+    return [item["id"] for item in _invariants()]
+
+
+def test_the_project_rules_are_there_from_the_start(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+
+    rules = [item["rule"] for item in _invariants()]
+
+    assert "Backend: FastAPI" in rules
+    assert "LLM: Gemini" in rules
+    assert "Storage: JSON files" in rules
+    assert "Android: Kotlin" in rules
+    assert "Android layering: ViewModel -> Repository -> API" in rules
+    assert "SQLite is not used" in rules
+    assert "The LLM API is called only from the backend, never from Android" in rules
+    assert any("No new LLM integration" in rule for rule in rules)
+
+
+def test_every_rule_says_which_of_the_four_categories_it_is(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+
+    categories = {item["category"] for item in _invariants()}
+
+    assert categories <= {"architecture", "technology_stack", "technical_decisions", "business_rules"}
+    assert {"architecture", "technology_stack", "technical_decisions"} <= categories
+
+
+def test_the_rules_are_sent_with_every_request_under_every_strategy(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+    _mock_memory_router(monkeypatch, "{}")
+
+    for strategy in ("full", "sliding_window", "sticky_facts", "branching", "layered_memory"):
+        client.post("/agent/chat", json={"message": "Предложи улучшение архитектуры.", "strategy": strategy})
+
+    assert len(prompts) == 5
+    assert all("INVARIANTS" in prompt and "SQLite is not used" in prompt for prompt in prompts)
+
+
+def test_the_rules_come_before_the_profile_and_the_task_state(monkeypatch, tmp_path):
+    """Hardest first: the rules bind whatever is asked, the profile is a
+    default the message can override, the task state says where to carry on."""
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+    _set_profile(PROFILE_A)
+    _mock_task_tracker(monkeypatch, '{"task_stage": "planning", "current_step": "план"}')
+    client.post("/agent/chat", json={"message": "Начнём.", "strategy": "full"})
+
+    client.post("/agent/chat", json={"message": "Продолжим.", "strategy": "full"})
+
+    prompt = prompts[-1]
+    assert prompt.index("Conversation so far:") < prompt.index("INVARIANTS")
+    assert prompt.index("INVARIANTS") < prompt.index("USER PROFILE")
+    assert prompt.index("USER PROFILE") < prompt.index("TASK STATE")
+    assert prompt.index("TASK STATE") < prompt.index("Learner's new request: Продолжим.")
+
+
+def test_the_request_carries_what_to_do_about_a_conflict(monkeypatch, tmp_path):
+    """The rules alone would only produce a refusal - the protocol is what
+    turns it into a named rule, a reason and an alternative."""
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+
+    client.post(
+        "/agent/chat",
+        json={"message": "Давай перенесём вызов Gemini API прямо в Android и возьмём SQLite вместо JSON."},
+    )
+
+    prompt = prompts[0]
+    assert "The LLM API is called only from the backend, never from Android" in prompt
+    assert "SQLite is not used" in prompt
+    assert "name the rule it conflicts with" in prompt
+    assert "offer an alternative that respects the rules" in prompt
+
+
+def test_a_rule_can_be_added_changed_and_removed(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+
+    added = client.post(
+        "/agent/invariants",
+        json={"category": "business_rules", "rule": "Материалы только для уровней JLPT"},
+    ).json()["invariants"]
+    new_id = added[-1]["id"]
+    changed = client.put(
+        f"/agent/invariants/{new_id}",
+        json={"category": "business_rules", "rule": "Материалы только для уровней N5-N1"},
+    ).json()["invariants"]
+    removed = client.delete(f"/agent/invariants/{new_id}").json()["invariants"]
+
+    assert new_id == "business_rules-1"
+    assert changed[-1]["rule"] == "Материалы только для уровней N5-N1"
+    assert new_id not in [item["id"] for item in removed]
+    assert len(removed) == len(added) - 1
+
+
+def test_changing_a_rule_keeps_its_place_in_the_list(monkeypatch, tmp_path):
+    """The order the rules are read in should not shuffle because one of
+    them was reworded."""
+    _isolate_agent(monkeypatch, tmp_path)
+    before = _ids()
+
+    client.put(
+        "/agent/invariants/stack-storage",
+        json={"category": "technology_stack", "rule": "Storage: JSON files only"},
+    )
+
+    assert _ids() == before
+    assert [item["rule"] for item in _invariants() if item["id"] == "stack-storage"] == [
+        "Storage: JSON files only"
+    ]
+
+
+def test_a_rule_added_applies_to_the_very_next_message(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+    client.post(
+        "/agent/invariants",
+        json={"category": "business_rules", "rule": "Никаких платных сервисов"},
+    )
+
+    client.post("/agent/chat", json={"message": "Что посоветуешь?"})
+
+    assert "Business rules:" in prompts[0]
+    assert "Никаких платных сервисов" in prompts[0]
+
+
+def test_a_rule_removed_stops_being_sent(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+    client.delete("/agent/invariants/decision-no-sqlite")
+
+    client.post("/agent/chat", json={"message": "Что посоветуешь?"})
+
+    assert "SQLite is not used" not in prompts[0]
+    assert "Backend: FastAPI" in prompts[0]
+
+
+def test_removing_a_rule_that_is_not_there_is_reported(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+
+    assert client.delete("/agent/invariants/nope").status_code == 404
+
+
+def test_a_rule_with_an_unknown_category_is_refused(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+
+    before = _ids()
+    response = client.post("/agent/invariants", json={"category": "vibes", "rule": "что-нибудь"})
+
+    assert response.status_code == 422
+    assert _ids() == before
+
+
+def test_an_empty_rule_is_refused(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+
+    assert client.post("/agent/invariants", json={"category": "architecture", "rule": "   "}).status_code == 422
+
+
+def test_the_rules_survive_a_restart(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    client.post("/agent/invariants", json={"category": "business_rules", "rule": "Никаких платных сервисов"})
+    client.delete("/agent/invariants/decision-no-sqlite")
+
+    monkeypatch.setattr(
+        agent_module.agent,
+        "_invariants",
+        AgentInvariantsStorage(file_path=str(tmp_path / "invariants.json")),
+    )
+
+    rules = [item["rule"] for item in _invariants()]
+    assert "Никаких платных сервисов" in rules
+    assert "SQLite is not used" not in rules
+
+
+def test_the_rules_are_not_memory_and_nothing_clears_them(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "ответ агента")
+    _mock_count_tokens(monkeypatch, 90)
+    _mock_memory_router(monkeypatch, "{}")
+    client.post("/agent/chat", json={"message": "Вопрос.", "strategy": "layered_memory"})
+
+    client.delete("/agent/history")
+    for layer in ("short_term", "working", "long_term"):
+        client.delete(f"/agent/memory/{layer}")
+    client.delete("/agent/task")
+    client.delete("/agent/profile")
+
+    assert len(_invariants()) == 8
+
+
+def test_the_rules_never_end_up_in_the_conversation_or_the_memory(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "ответ агента")
+    _mock_count_tokens(monkeypatch, 90)
+    _mock_memory_router(monkeypatch, "{}")
+
+    client.post("/agent/chat", json={"message": "Вопрос про архитектуру.", "strategy": "layered_memory"})
+    history = client.get("/agent/history").json()["messages"]
+    memory = client.get("/agent/memory").json()
+
+    assert [entry["content"] for entry in history] == ["Вопрос про архитектуру.", "ответ агента"]
+    assert "SQLite" not in str(memory)
+    assert "FastAPI" not in str(memory)
+
+
+def test_the_two_scenarios_send_the_same_rules(monkeypatch, tmp_path):
+    """The difference between a request that fits the rules and one that
+    breaks them is in the request, not in what the agent was told."""
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+
+    client.post("/agent/chat", json={"message": "Предложи улучшение существующей архитектуры."})
+    client.delete("/agent/history")
+    client.post(
+        "/agent/chat",
+        json={"message": "Давай перенесём вызов Gemini API прямо в Android и SQLite вместо JSON."},
+    )
+
+    def invariants_block(prompt: str) -> str:
+        start = prompt.index("INVARIANTS")
+        return prompt[start : prompt.index("\n\nLearner", start)]
+
+    assert invariants_block(prompts[0]) == invariants_block(prompts[1])

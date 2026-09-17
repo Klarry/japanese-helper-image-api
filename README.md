@@ -61,8 +61,9 @@ Paths for the agent's files (`AGENT_HISTORY_FILE_PATH`,
 `AGENT_LONG_TERM_MEMORY_FILE_PATH`, `AGENT_USAGE_LOG_FILE_PATH`) and the sizes
 of its memories (`AGENT_RECENT_MESSAGES_KEPT`, `AGENT_SUMMARY_UPDATE_THRESHOLD`,
 `AGENT_FACTS_LIMIT`, `AGENT_MEMORY_ENTRY_LIMIT`, `AGENT_USER_PROFILE_FILE_PATH`,
-`AGENT_PROFILE_PREFERENCES_LIMIT`, `AGENT_TASK_TRACKING_ENABLED`) are all
-overridable the same way, and all have working defaults.
+`AGENT_PROFILE_PREFERENCES_LIMIT`, `AGENT_TASK_TRACKING_ENABLED`,
+`AGENT_INVARIANTS_FILE_PATH`) are all overridable the same way, and all have
+working defaults.
 
 `GEMINI_API_KEY` is read server-side only, in `app/core/config.py`, and is never
 returned to a client or written to logs.
@@ -253,6 +254,39 @@ immediately before the new message: "carry on from this exact step, do not start
 over" is the final thing the model reads. An idle task sends nothing. Tracking
 can be switched off with `AGENT_TASK_TRACKING_ENABLED=false`, which is how the
 earlier days' token comparisons are re-run without the extra call.
+
+### Invariants
+
+The layers above say what was said, how to answer and where the work has got to.
+None of them says what must never happen - so "move the Gemini call into the app"
+is a perfectly coherent suggestion an agent will happily help with.
+
+Invariants are their own layer: project rules in four categories -
+`architecture`, `technology_stack`, `technical_decisions`, `business_rules` - in
+their own file `data/agent_invariants.json` (`AGENT_INVARIANTS_FILE_PATH`), apart
+from the conversation and from every memory layer. They are not memory: nothing
+said in a conversation writes them, and clearing a conversation, a layer, the
+task or the profile cannot forget them. They change deliberately, through the
+API, because that is what a rule is.
+
+The file is seeded with this project's own rules the first time it is read, so a
+fresh install starts out constrained - ViewModel → Repository → API, FastAPI,
+Gemini, JSON storage, Kotlin, the LLM called only from the backend, no SQLite, no
+second LLM integration. A rule deleted afterwards stays deleted.
+
+- `GET /agent/invariants` returns every rule with its id and category.
+- `POST /agent/invariants` adds one (the id is generated from the category);
+  `PUT /agent/invariants/{id}` adds or changes that rule, keeping its place in
+  the list; `DELETE /agent/invariants/{id}` removes it, and an unknown id is a
+  404 rather than a silent success.
+
+Every request carries them as an `INVARIANTS` block, grouped by category, ahead
+of the profile and the task state - hardest rule first. The block carries the
+protocol as well as the rules: if the request would break one, name the rule,
+explain why it exists, and offer a permitted alternative instead of helping to
+work around it. What the backend guarantees is that the rules and that protocol
+reach the model on every single request; the refusal itself is the model's, so it
+is worth reading a live answer rather than assuming one.
 
 The summary and the recent messages are persisted together in
 `data/agent_history.json`, so a restart resumes the conversation either way,
