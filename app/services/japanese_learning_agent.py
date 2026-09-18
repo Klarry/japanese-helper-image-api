@@ -34,6 +34,7 @@ from app.schemas.agent import (
     AgentShortTermMemory,
     AgentStrategyResponse,
     AgentTaskStateResponse,
+    AgentTaskTransitionError,
     AgentTokenUsage,
     AgentUserProfile,
     AgentUserProfileRequest,
@@ -69,7 +70,13 @@ from app.services.agent_invariants import (
 )
 from app.services.agent_invariants import as_section as invariants_section
 from app.services.agent_memory_router import MemoryRouter
-from app.services.agent_task_state import TaskState, allowed_next
+from app.services.agent_task_state import (
+    TaskStage,
+    TaskState,
+    TransitionRefusal,
+    allowed_next,
+    next_requirement,
+)
 from app.services.agent_task_tracker import TaskTracker
 from app.services.agent_user_profile import (
     AgentUserProfileStorage,
@@ -135,8 +142,12 @@ class JapaneseLearningAgent:
     validation, done - and travels with the conversation so a task survives
     the app being closed. It is sent last, right before the new message, so
     "carry on from this step" is the final thing the model reads. Where a
-    task stands is proposed by TaskTracker and accepted only if the state
-    machine allows that move.
+    task stands is proposed by TaskTracker or asked for through the API, and
+    in both cases it is accepted only if the state machine allows that move -
+    the edge has to exist and the stage's own work has to be finished (a plan
+    approved before execution, a validation passed before done). A refused
+    move leaves the task where it was and records why, which is what the next
+    answer explains.
 
     The invariants (see agent_invariants) are the fourth: the rules of the
     project that must never be broken. They are not memory - no conversation
@@ -486,6 +497,89 @@ class JapaneseLearningAgent:
 
         return self._task_response(state.task_state)
 
+    def request_task_transition(
+        self,
+        stage: TaskStage,
+        current_step: str = "",
+        expected_action: str = "",
+    ) -> AgentTaskStateResponse:
+        """Move the task to a named stage, if it is allowed to go there.
+
+        The same check the agent's own proposals go through, exposed so a
+        client can drive the task deliberately. A refused move raises 409 with
+        the whole refusal - where the task is, where it may go next, and what
+        is missing - and leaves the stage, the step and the expected action
+        exactly as they were. What is written in that case is only the reason:
+        the screen keeps showing it, and the agent explains it on the next
+        message rather than silently ignoring what was asked.
+        """
+        state = self._history.load()
+        outcome = state.task_state.with_update(stage, current_step, expected_action)
+        state.task_state = outcome.state
+        self._history.save(state)
+
+        if outcome.refusal is not None:
+            raise HTTPException(status_code=409, detail=outcome.refusal.as_json())
+
+        return self._task_response(outcome.state)
+
+    def approve_task_plan(self, plan: str) -> AgentTaskStateResponse:
+        """Record the plan the task will be executed by.
+
+        Only while the task is planning: the plan is what planning produces,
+        and a plan approved from anywhere else would be a way round the very
+        condition it exists to satisfy.
+        """
+        state = self._history.load()
+
+        if state.task_state.stage is not TaskStage.PLANNING:
+            raise HTTPException(
+                status_code=409,
+                detail=self._stage_required(state.task_state, TaskStage.PLANNING, "a plan is approved"),
+            )
+
+        state.task_state = state.task_state.with_plan(plan)
+        self._history.save(state)
+
+        return self._task_response(state.task_state)
+
+    def record_task_validation(self, passed: bool, notes: str = "") -> AgentTaskStateResponse:
+        """Record how validation went. Only while the task is validating.
+
+        A failed check is recorded as well as a passing one: "checked, not
+        right yet" is not "not checked", and neither of them opens the way to
+        done.
+        """
+        state = self._history.load()
+
+        if state.task_state.stage is not TaskStage.VALIDATION:
+            raise HTTPException(
+                status_code=409,
+                detail=self._stage_required(
+                    state.task_state, TaskStage.VALIDATION, "validation is recorded"
+                ),
+            )
+
+        state.task_state = state.task_state.with_validation(passed, notes)
+        self._history.save(state)
+
+        return self._task_response(state.task_state)
+
+    @staticmethod
+    def _stage_required(task_state: TaskState, stage: TaskStage, action: str) -> dict[str, object]:
+        """A refusal in the same shape as a refused transition, for the two
+        records that only one stage may make."""
+        return {
+            "message": (
+                f"The task is in '{task_state.stage.value}': it has to be in "
+                f"'{stage.value}' before {action}."
+            ),
+            "current_stage": task_state.stage.value,
+            "requested_stage": None,
+            "required_next": allowed_next(task_state.stage),
+            "unmet_condition": f"the task is not in '{stage.value}'",
+        }
+
     # --- checkpoints and branches -----------------------------------------
 
     def create_checkpoint(self, name: str | None = None) -> AgentCheckpointResponse:
@@ -676,7 +770,8 @@ class JapaneseLearningAgent:
 
         The tracker only proposes; TaskState.with_update accepts the move
         only when the state machine allows it, so a proposal to skip a stage
-        changes nothing. Best-effort, like every other extra call here: a
+        changes nothing but the recorded reason - which the next answer
+        explains to the learner. Best-effort, like every other extra call: a
         failed update leaves the task exactly where it was and is retried on
         the next message rather than failing an answer that already worked.
         """
@@ -690,8 +785,12 @@ class JapaneseLearningAgent:
             return 0
 
         state.task_state = state.task_state.with_update(
-            update.stage, update.current_step, update.expected_action
-        )
+            update.stage,
+            update.current_step,
+            update.expected_action,
+            plan=update.plan,
+            validation_passed=update.validation_passed,
+        ).state
 
         return update.tokens_used
 
@@ -723,7 +822,16 @@ class JapaneseLearningAgent:
             current_step=task_state.current_step,
             expected_action=task_state.expected_action,
             allowed_next=allowed_next(task_state.stage),
+            plan=task_state.plan,
+            validation_passed=task_state.validation_passed,
+            validation_note=task_state.validation_note,
+            next_requirement=next_requirement(task_state),
+            blocked=JapaneseLearningAgent._blocked_response(task_state.blocked),
         )
+
+    @staticmethod
+    def _blocked_response(refusal: TransitionRefusal | None) -> AgentTaskTransitionError | None:
+        return AgentTaskTransitionError(**refusal.as_json()) if refusal is not None else None
 
     @staticmethod
     def _memory_layers(state: ConversationState, long_term: LongTermMemory) -> MemoryLayers:

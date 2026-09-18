@@ -17,7 +17,10 @@ from app.schemas.agent import (
     AgentShortTermMemoryRequest,
     AgentStrategyRequest,
     AgentStrategyResponse,
+    AgentTaskPlanRequest,
     AgentTaskStateResponse,
+    AgentTaskTransitionRequest,
+    AgentTaskValidationRequest,
     AgentUsageResponse,
     AgentUserProfile,
     AgentUserProfileRequest,
@@ -170,6 +173,37 @@ async def clear_agent_task_state() -> AgentTaskStateResponse:
     """End the task. The conversation, the memory layers and the profile are
     left untouched."""
     return agent.clear_task_state()
+
+
+@router.post("/agent/task/transition")
+async def request_agent_task_transition(
+    request: AgentTaskTransitionRequest,
+) -> AgentTaskStateResponse:
+    """Move the task to a named stage.
+
+    409 when the move is not allowed, with the current stage, the stage that
+    may come next and the condition that is not met yet. The task itself does
+    not move.
+    """
+    return agent.request_task_transition(
+        request.task_stage, request.current_step, request.expected_action
+    )
+
+
+@router.post("/agent/task/plan")
+async def approve_agent_task_plan(request: AgentTaskPlanRequest) -> AgentTaskStateResponse:
+    """Approve the plan the task will be executed by - the condition for
+    leaving planning. 409 unless the task is planning."""
+    return agent.approve_task_plan(request.plan)
+
+
+@router.post("/agent/task/validation")
+async def record_agent_task_validation(
+    request: AgentTaskValidationRequest,
+) -> AgentTaskStateResponse:
+    """Record how validation went - the condition for reaching done. 409
+    unless the task is validating."""
+    return agent.record_task_validation(request.passed, request.notes)
 
 
 @router.get("/agent/usage")

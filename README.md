@@ -245,7 +245,8 @@ task somewhere impossible. Like every other extra call here it is best-effort: a
 failed update leaves the task exactly where it was.
 
 - `GET /agent/task` returns the stage, both step fields, and `allowed_next` - the
-  machine reported rather than documented, so a client never guesses.
+  machine reported rather than documented, so a client never guesses - plus
+  `plan`, `validation_passed`, `next_requirement` and the last refused move.
 - `DELETE /agent/task` ends the task and leaves the conversation, the memory
   layers and the profile untouched.
 
@@ -254,6 +255,49 @@ immediately before the new message: "carry on from this exact step, do not start
 over" is the final thing the model reads. An idle task sends nothing. Tracking
 can be switched off with `AGENT_TASK_TRACKING_ENABLED=false`, which is how the
 earlier days' token comparisons are re-run without the extra call.
+
+#### Controlled transitions
+
+The order above is only half a rule: a move can be legal in shape and still
+wrong in fact. Execution may only begin once a plan has actually been approved,
+and `done` may only be reached once a validation has actually passed. So every
+change of stage - asked for through the API or proposed by the tracker - goes
+through one check, `check_transition`, which asks both questions: is this edge
+in the table, and is the current stage's own work finished.
+
+A refused move changes nothing about where the task is. It answers with `409`
+and the four things a refusal owes the caller:
+
+```json
+{
+  "message": "The task is in 'execution' and cannot move to 'done': from 'execution' the only next stage is 'validation', and the task has not been through validation yet.",
+  "current_stage": "execution",
+  "requested_stage": "done",
+  "required_next": ["validation"],
+  "unmet_condition": "the task has not been through validation yet"
+}
+```
+
+The same refusal is kept on the task as `blocked` until the next move that
+works, which is what makes it visible rather than silent: the screen keeps
+showing why the task did not advance, and the refusal is added to the
+`TASK STATE` block so the next answer explains it to the learner in words
+instead of quietly doing nothing.
+
+- `POST /agent/task/transition` - `{"task_stage": ..., "current_step": ...,
+  "expected_action": ...}`. An unknown stage is rejected as `422` before it
+  reaches the machine; a disallowed one as `409`.
+- `POST /agent/task/plan` - `{"plan": "..."}`, the condition for leaving
+  planning. `409` unless the task is planning: a plan approved from anywhere
+  else would be a way round the very condition it exists to satisfy.
+- `POST /agent/task/validation` - `{"passed": true|false, "notes": "..."}`, the
+  condition for reaching done. A failed check is recorded too - "checked, not
+  right yet" is not "not checked", and neither opens the way to `done`.
+
+The agent reaches the same two records through the tracker, which reports a plan
+the learner approved or a check that came out right alongside the move it
+proposes. Both are only accepted in the stage that produces them, so the model
+cannot approve a plan retrospectively to unlock a stage it is already past.
 
 ### Invariants
 

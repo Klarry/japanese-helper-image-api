@@ -1234,6 +1234,11 @@ def test_a_task_starts_in_planning_and_nowhere_else(monkeypatch, tmp_path):
         "current_step": "составляем план",
         "expected_action": "согласовать план",
         "allowed_next": ["execution"],
+        "plan": "",
+        "validation_passed": False,
+        "validation_note": "",
+        "next_requirement": "the plan has not been approved yet",
+        "blocked": None,
     }
 
 
@@ -1360,6 +1365,11 @@ def test_clearing_the_task_leaves_the_conversation_and_everything_else_alone(mon
         "current_step": "",
         "expected_action": "",
         "allowed_next": ["planning"],
+        "plan": "",
+        "validation_passed": False,
+        "validation_note": "",
+        "next_requirement": "",
+        "blocked": None,
     }
     assert len(client.get("/agent/history").json()["messages"]) == 2
     assert client.get("/agent/memory").json()["working"]["constraints"] == ["уровень N4"]
@@ -1409,7 +1419,7 @@ def test_the_eight_step_scenario(monkeypatch, tmp_path):
         '{"task_stage": "planning", "current_step": "план из 4 шагов",'
         ' "expected_action": "согласовать план"}',
         '{"task_stage": "execution", "current_step": "шаг 2 из 4 — предложения с 〜ながら",'
-        ' "expected_action": "показать пять предложений"}',
+        ' "expected_action": "показать пять предложений", "plan": "план из 4 шагов"}',
     )
     client.post("/agent/chat", json={"message": "Давай составим план по грамматике N4."})
     assert _task()["task_stage"] == "planning"
@@ -1451,7 +1461,9 @@ def test_the_eight_step_scenario(monkeypatch, tmp_path):
 
     # 8. done
     _mock_task_tracker(
-        monkeypatch, '{"task_stage": "done", "current_step": "задача завершена", "expected_action": ""}'
+        monkeypatch,
+        '{"task_stage": "done", "current_step": "задача завершена", "expected_action": "",'
+        ' "validation_passed": true}',
     )
     client.post("/agent/chat", json={"message": "Отлично, всё верно. Закончили."})
     assert _task()["task_stage"] == "done"
@@ -1696,3 +1708,270 @@ def test_the_two_scenarios_send_the_same_rules(monkeypatch, tmp_path):
         return prompt[start : prompt.index("\n\nLearner", start)]
 
     assert invariants_block(prompts[0]) == invariants_block(prompts[1])
+
+
+# --- controlled transitions (Day 15) ---------------------------------------
+
+
+def _transition(stage: str, current_step: str = "", expected_action: str = ""):
+    return client.post(
+        "/agent/task/transition",
+        json={"task_stage": stage, "current_step": current_step, "expected_action": expected_action},
+    )
+
+
+def _start_planning(plan: str | None = None) -> dict:
+    """Bring a task to planning through the API, optionally with its plan
+    approved - the starting point most of these tests need."""
+    _transition("planning", "составляем план", "согласовать план")
+
+    if plan is not None:
+        client.post("/agent/task/plan", json={"plan": plan})
+
+    return _task()
+
+
+def test_a_task_is_driven_stage_by_stage_through_the_api(monkeypatch, tmp_path):
+    """1. The normal path: planning -> execution -> validation -> done, with
+    each stage's own work done before the one after it is entered."""
+    _isolate_agent(monkeypatch, tmp_path)
+
+    assert _transition("planning", "составляем план").json()["task_stage"] == "planning"
+    client.post("/agent/task/plan", json={"plan": "план из 4 шагов"})
+    assert _transition("execution", "шаг 1 из 4").json()["task_stage"] == "execution"
+    assert _transition("validation", "проверяем предложения").json()["task_stage"] == "validation"
+    client.post("/agent/task/validation", json={"passed": True, "notes": "всё верно"})
+    finished = _transition("done", "задача завершена").json()
+
+    assert finished["task_stage"] == "done"
+    assert finished["allowed_next"] == []
+    assert finished["blocked"] is None
+
+
+def test_planning_cannot_jump_to_done(monkeypatch, tmp_path):
+    """2. Refused, with the four things a refusal owes the caller - and the
+    task exactly where it was."""
+    _isolate_agent(monkeypatch, tmp_path)
+    _start_planning(plan="план из 4 шагов")
+
+    response = _transition("done", "всё готово")
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["current_stage"] == "planning"
+    assert detail["requested_stage"] == "done"
+    assert detail["required_next"] == ["execution"]
+    assert detail["unmet_condition"] == "the task has not been through execution and validation yet"
+    assert _task()["task_stage"] == "planning"
+    assert _task()["current_step"] == "составляем план"
+
+
+def test_planning_cannot_jump_to_validation(monkeypatch, tmp_path):
+    """3."""
+    _isolate_agent(monkeypatch, tmp_path)
+    _start_planning(plan="план из 4 шагов")
+
+    response = _transition("validation", "проверяем")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["unmet_condition"] == "the task has not been through execution yet"
+    assert _task()["task_stage"] == "planning"
+
+
+def test_execution_cannot_jump_to_done(monkeypatch, tmp_path):
+    """4."""
+    _isolate_agent(monkeypatch, tmp_path)
+    _start_planning(plan="план из 4 шагов")
+    _transition("execution", "шаг 1 из 4")
+
+    response = _transition("done", "всё готово")
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["required_next"] == ["validation"]
+    assert detail["unmet_condition"] == "the task has not been through validation yet"
+    assert _task()["task_stage"] == "execution"
+
+
+def test_execution_cannot_start_without_an_approved_plan(monkeypatch, tmp_path):
+    """The edge is legal and the move is still refused: planning has not
+    produced the thing execution needs."""
+    _isolate_agent(monkeypatch, tmp_path)
+    _start_planning()
+
+    response = _transition("execution", "шаг 1 из 4")
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["current_stage"] == "planning"
+    assert detail["required_next"] == ["execution"]
+    assert detail["unmet_condition"] == "the plan has not been approved yet"
+    assert _task()["task_stage"] == "planning"
+    assert _task()["next_requirement"] == "the plan has not been approved yet"
+
+
+def test_done_cannot_be_reached_without_a_validation_that_passed(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _start_planning(plan="план из 4 шагов")
+    _transition("execution", "шаг 1 из 4")
+    _transition("validation", "проверяем")
+    client.post("/agent/task/validation", json={"passed": False, "notes": "две ошибки в 〜ながら"})
+
+    response = _transition("done", "готово")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["unmet_condition"] == "validation has not passed yet"
+    assert _task()["task_stage"] == "validation"
+    assert _task()["validation_note"] == "две ошибки в 〜ながら"
+
+
+def test_the_refusal_stays_on_the_task_after_the_error_response(monkeypatch, tmp_path):
+    """The 409 is gone as soon as it is read; the reason the task did not
+    move is still worth showing on the screen that asked."""
+    _isolate_agent(monkeypatch, tmp_path)
+    _start_planning(plan="план из 4 шагов")
+
+    _transition("done", "всё готово")
+
+    blocked = _task()["blocked"]
+    assert blocked["current_stage"] == "planning"
+    assert blocked["requested_stage"] == "done"
+    assert blocked["required_next"] == ["execution"]
+    assert "cannot move to 'done'" in blocked["message"]
+
+
+def test_a_refused_move_is_explained_by_the_agent_on_the_next_message(monkeypatch, tmp_path):
+    """Nothing is silently ignored: the next request carries the refusal, so
+    the answer can say which stage the task is in and what is missing."""
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+    _start_planning(plan="план из 4 шагов")
+    _transition("done", "всё готово")
+
+    client.post("/agent/chat", json={"message": "Ну что, закончили?"})
+
+    assert "- Stage: planning" in prompts[-1]
+    assert "Refused move:" in prompts[-1]
+    assert "the task has not been through execution and validation yet" in prompts[-1]
+
+
+def test_the_agents_own_illegal_proposal_is_refused_the_same_way(monkeypatch, tmp_path):
+    """The tracker goes through the same check as a client: a model that
+    decides the task is finished cannot finish it."""
+    _isolate_agent(monkeypatch, tmp_path)
+    _mock_generate(monkeypatch, "ответ агента")
+    _mock_count_tokens(monkeypatch, 90)
+    _start_planning(plan="план из 4 шагов")
+    _mock_task_tracker(
+        monkeypatch,
+        '{"task_stage": "done", "current_step": "задача завершена", "expected_action": ""}',
+    )
+
+    client.post("/agent/chat", json={"message": "Всё, мы закончили."})
+
+    assert _task()["task_stage"] == "planning"
+    assert _task()["blocked"]["requested_stage"] == "done"
+
+
+def test_a_plan_can_only_be_approved_while_the_task_is_planning(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _start_planning(plan="план из 4 шагов")
+    _transition("execution", "шаг 1 из 4")
+
+    response = client.post("/agent/task/plan", json={"plan": "другой план"})
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["current_stage"] == "execution"
+    assert _task()["plan"] == "план из 4 шагов"
+
+
+def test_validation_can_only_be_recorded_while_the_task_is_validating(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _start_planning(plan="план из 4 шагов")
+    _transition("execution", "шаг 1 из 4")
+
+    response = client.post("/agent/task/validation", json={"passed": True})
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["unmet_condition"] == "the task is not in 'validation'"
+    assert _task()["validation_passed"] is False
+
+
+def test_a_stage_that_does_not_exist_never_reaches_the_machine(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _start_planning(plan="план из 4 шагов")
+
+    assert _transition("halfway").status_code == 422
+    assert client.post("/agent/task/plan", json={"plan": "   "}).status_code == 422
+    assert _task()["task_stage"] == "planning"
+
+
+def test_clearing_the_task_forgets_the_plan_the_validation_and_the_refusal(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _start_planning(plan="план из 4 шагов")
+    _transition("done", "всё готово")
+
+    cleared = client.delete("/agent/task").json()
+
+    assert cleared["task_stage"] == "idle"
+    assert cleared["plan"] == ""
+    assert cleared["blocked"] is None
+
+
+def test_the_eight_step_scenario_of_day_fifteen(monkeypatch, tmp_path):
+    """The whole assignment in one run: the normal path, the three refused
+    jumps, a pause in execution, a restart, carrying on from execution and
+    finishing only after validation passes."""
+    _isolate_agent(monkeypatch, tmp_path)
+    prompts = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+
+    # 1. planning
+    _transition("planning", "план из 4 шагов", "согласовать план")
+    assert _task()["allowed_next"] == ["execution"]
+    assert _task()["next_requirement"] == "the plan has not been approved yet"
+
+    # 2. planning -> done: refused
+    assert _transition("done").status_code == 409
+    # 3. planning -> validation: refused
+    assert _transition("validation").status_code == 409
+    assert _task()["task_stage"] == "planning"
+
+    # 1 (continued). the plan is approved, and only then execution starts
+    client.post("/agent/task/plan", json={"plan": "4 шага: разбор, примеры, проверка, вывод"})
+    assert _transition("execution", "шаг 2 из 4 — предложения с 〜ながら").status_code == 200
+
+    # 4. execution -> done: refused
+    refused = _transition("done", "всё готово")
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["required_next"] == ["validation"]
+
+    # 5. pause in execution, 6. restart: a new storage instance over the same file
+    paused = _task()
+    monkeypatch.setattr(
+        agent_module.agent, "_history", AgentHistoryStorage(file_path=str(tmp_path / "history.json"))
+    )
+
+    # 7. carry on from execution, with the step and the plan it was on
+    assert _task() == paused
+    assert _task()["task_stage"] == "execution"
+    assert _task()["current_step"] == "шаг 2 из 4 — предложения с 〜ながら"
+    assert _task()["plan"] == "4 шага: разбор, примеры, проверка, вывод"
+
+    client.post("/agent/chat", json={"message": "Продолжаем."})
+    resumed = prompts[-1]
+    assert "- Stage: execution" in resumed
+    assert "шаг 2 из 4 — предложения с 〜ながら" in resumed
+    assert "- Approved plan: 4 шага: разбор, примеры, проверка, вывод" in resumed
+
+    # 8. validation, and done only once it passed
+    _transition("validation", "проверяем предложения")
+    assert _transition("done").status_code == 409
+    client.post("/agent/task/validation", json={"passed": True, "notes": "все пять верны"})
+    finished = _transition("done", "задача завершена").json()
+
+    assert finished["task_stage"] == "done"
+    assert finished["allowed_next"] == []
+    assert finished["validation_passed"] is True
+    assert _transition("planning").status_code == 409

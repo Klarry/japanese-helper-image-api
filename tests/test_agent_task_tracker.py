@@ -119,3 +119,65 @@ def test_the_tracker_only_proposes_it_does_not_decide(monkeypatch):
     _stub(monkeypatch, '{"task_stage": "done", "current_step": "всё"}')
 
     assert _track("хватит", TaskState(stage=TaskStage.PLANNING)).stage is TaskStage.DONE
+
+
+# --- Day 15: the evidence the guarded stages need --------------------------
+
+
+def test_the_plan_the_learner_approved_is_reported_with_the_move(monkeypatch):
+    _stub(
+        monkeypatch,
+        '{"task_stage": "execution", "current_step": "шаг 1 из 4", '
+        '"expected_action": "написать предложения", "plan": "4 шага: разбор, примеры, проверка, вывод"}',
+    )
+
+    update = _track("План подходит, приступаем.", TaskState(stage=TaskStage.PLANNING))
+
+    assert update.stage is TaskStage.EXECUTION
+    assert update.plan == "4 шага: разбор, примеры, проверка, вывод"
+
+
+def test_a_validation_that_came_out_right_is_reported_with_the_move(monkeypatch):
+    _stub(
+        monkeypatch,
+        '{"task_stage": "done", "current_step": "задача завершена", '
+        '"expected_action": "", "validation_passed": true}',
+    )
+
+    update = _track("Да, все пять предложений верны.", TaskState(stage=TaskStage.VALIDATION))
+
+    assert update.validation_passed is True
+
+
+def test_nothing_reported_is_nothing_claimed(monkeypatch):
+    """A tracker answer without the two extra fields says nothing about them
+    - it must not read as "the plan was approved"."""
+    _stub(monkeypatch, '{"task_stage": "planning", "current_step": "составляем план"}')
+
+    update = _track("Давай составим план.")
+
+    assert update.plan == ""
+    assert update.validation_passed is None
+
+
+def test_something_that_is_not_true_or_false_is_not_a_validation(monkeypatch):
+    _stub(monkeypatch, '{"task_stage": "validation", "validation_passed": "yes"}')
+
+    assert _track("проверь", TaskState(stage=TaskStage.VALIDATION)).validation_passed is None
+
+
+def test_the_model_is_told_what_the_next_stage_is_still_waiting_for(monkeypatch):
+    captured = _stub(monkeypatch, '{"task_stage": "planning", "current_step": "составляем план"}')
+
+    _track("приступаем", TaskState(stage=TaskStage.PLANNING))
+
+    assert "the plan has not been approved yet" in captured["prompt"]
+    assert "not available yet" in captured["prompt"]
+
+
+def test_an_open_way_forward_is_not_announced_as_a_condition(monkeypatch):
+    captured = _stub(monkeypatch, '{"task_stage": "execution", "current_step": "шаг 2"}')
+
+    _track("продолжаем", TaskState(stage=TaskStage.EXECUTION, plan="план"))
+
+    assert "not available yet" not in captured["prompt"]

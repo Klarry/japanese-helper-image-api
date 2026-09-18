@@ -42,6 +42,21 @@ class MemoryLayer(str, Enum):
     LONG_TERM = "long_term"
 
 
+class TaskStage(str, Enum):
+    """The stages a task moves through, in the only order they may be taken.
+
+    ``IDLE`` is the absence of a task - not a stage the learner is ever in the
+    middle of, which is why it is the only stage a task can be started from
+    and the one clearing returns to.
+    """
+
+    IDLE = "idle"
+    PLANNING = "planning"
+    EXECUTION = "execution"
+    VALIDATION = "validation"
+    DONE = "done"
+
+
 class AgentChatRequest(BaseModel):
     message: str
     # Which strategy to answer with, for this request only. Omitted means the
@@ -274,18 +289,82 @@ class AgentInvariantRequest(BaseModel):
         return stripped
 
 
+class AgentTaskTransitionError(BaseModel):
+    """Why a move between stages was refused.
+
+    Everything the refusal has to say, in named fields rather than one
+    sentence: which stage the task is in, which stage was asked for, which
+    stage may actually come next, and the condition that is not met yet.
+    ``message`` is those four put into a sentence, for a client that only
+    wants to show something.
+    """
+
+    message: str = ""
+    current_stage: str = ""
+    requested_stage: str | None = None
+    required_next: list[str] = []
+    unmet_condition: str = ""
+
+
 class AgentTaskStateResponse(BaseModel):
     """Where the task in progress has got to, and where it may go next.
 
     ``allowed_next`` is the state machine itself, reported rather than
     documented: a client never has to guess which move is legal, and an
     empty list means the task is finished (or there is none).
+    ``next_requirement`` is the other half of that answer - a move can be
+    legal in shape and still blocked because the stage's own work is not
+    finished, and this says what is missing.
     """
 
     task_stage: str = "idle"
     current_step: str = ""
     expected_action: str = ""
     allowed_next: list[str] = []
+    plan: str = ""
+    validation_passed: bool = False
+    validation_note: str = ""
+    next_requirement: str = ""
+    # The last refused move, kept so the refusal survives the response that
+    # reported it: the screen can still show why the task did not advance,
+    # and the agent is told about it on the next message.
+    blocked: AgentTaskTransitionError | None = None
+
+
+class AgentTaskTransitionRequest(BaseModel):
+    """Ask for a specific move. Rejected as a whole when the move is not
+    allowed - the step fields describe the stage being asked for, so storing
+    them without the stage would leave the task describing itself wrongly."""
+
+    task_stage: TaskStage
+    current_step: str = ""
+    expected_action: str = ""
+
+
+class AgentTaskPlanRequest(BaseModel):
+    """Approve the plan the task will be executed by. Only meaningful while
+    the task is planning: the plan is what planning produces."""
+
+    plan: str
+
+    @field_validator("plan")
+    @classmethod
+    def plan_must_not_be_blank(cls, value: str) -> str:
+        stripped = value.strip()
+
+        if not stripped:
+            raise ValueError("plan must not be empty")
+
+        return stripped
+
+
+class AgentTaskValidationRequest(BaseModel):
+    """Record how validation went. A failed validation is recorded too - it
+    is the difference between "not checked yet" and "checked, not right yet",
+    and neither of them opens the way to done."""
+
+    passed: bool
+    notes: str = ""
 
 
 class AgentUsageEntry(BaseModel):
