@@ -4,3 +4,4 @@ httpx
 pydantic
 pillow
 python-dotenv
+mcp>=2.2,<3

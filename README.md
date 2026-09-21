@@ -341,6 +341,43 @@ Every request's token usage is appended to `data/agent_token_usage.json`
 record carries the flag it was produced under, and what the summarising itself
 cost, so neither side of the comparison hides anything.
 
+## MCP client (Day 16)
+
+A minimal client for the [Model Context Protocol](https://modelcontextprotocol.io),
+built on the official Python SDK (`mcp` 2.x). For now it only proves the
+connection works; nothing calls a tool yet and the agent does not use it.
+
+```
+python -m app.services.mcp_client
+```
+
+starts the bundled local server over stdio and logs every step:
+
+```
+INFO  MCP: starting server over stdio: .venv/bin/python mcp_servers/japanese_learning.py
+INFO  MCP: server process started, stdio pipes open
+INFO  MCP: session initialized - server 'japanese-learning' version 1.0.0, protocol 2025-11-25
+INFO  MCP: list_tools() returned 3 tool(s) from 'japanese-learning'
+INFO  MCP:   - search_japanese_word(query): Find Japanese words in the learner's dictionary ...
+INFO  MCP:   - get_kanji_info(kanji): Describe a single kanji: its meaning, on'yomi and kun'yomi ...
+INFO  MCP:   - create_example_sentence(word): Give a short example sentence that uses the word ...
+```
+
+- `app/services/mcp_client.py` - `list_server_tools()`: `stdio_client` ->
+  `ClientSession.initialize()` -> `list_tools()` (following the cursor, so a
+  paginated server is read whole) -> log. Returns the server's name, version,
+  negotiated protocol and tools as plain data. A server that cannot be started
+  or does not finish the handshake raises `McpConnectionError` - a failed
+  connection is never reported as a server with no tools.
+- `mcp_servers/japanese_learning.py` - the local test server (`MCPServer`, the
+  v2 name for `FastMCP`) with three tools: `search_japanese_word`,
+  `get_kanji_info`, `create_example_sentence`. Its dictionaries are built in: no
+  network, no Gemini, no files. It is a separate program, started as a
+  subprocess; nothing in the FastAPI app imports it.
+
+The server is started with the same interpreter as the client and gets the
+SDK's default minimal environment, so it never sees `GEMINI_API_KEY`.
+
 ## Layout
 
 ```
@@ -350,5 +387,6 @@ app/api/routes/               HTTP endpoints
 app/schemas/                  Pydantic request/response models
 app/services/                 Gemini calls, image handling, prompts (incl. kanji word set)
 app/core/config.py            environment and constants
+mcp_servers/                  local MCP servers, run as subprocesses (not part of the app)
 deploy/                       systemd unit
 ```
