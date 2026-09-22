@@ -15,6 +15,7 @@ from fastapi import HTTPException
 
 from app.core.config import (
     AGENT_COMPRESSION_ENABLED,
+    AGENT_MCP_TOOLS_ENABLED,
     AGENT_RECENT_MESSAGES_KEPT,
     AGENT_TASK_TRACKING_ENABLED,
 )
@@ -36,6 +37,7 @@ from app.schemas.agent import (
     AgentTaskStateResponse,
     AgentTaskTransitionError,
     AgentTokenUsage,
+    AgentToolCall,
     AgentUserProfile,
     AgentUserProfileRequest,
     AgentWorkingMemory,
@@ -78,6 +80,9 @@ from app.services.agent_task_state import (
     next_requirement,
 )
 from app.services.agent_task_tracker import TaskTracker
+from app.services.agent_tool_planner import ToolPlanner
+from app.services.agent_tools import McpToolbox, results_section, unavailable_section
+from app.services.mcp_client import McpConnectionError
 from app.services.agent_user_profile import (
     AgentUserProfileStorage,
     UserProfile,
@@ -149,6 +154,14 @@ class JapaneseLearningAgent:
     move leaves the task where it was and records why, which is what the next
     answer explains.
 
+    MCP tools (see agent_tools) are the fifth, and the only one that reaches
+    outside the backend. Before answering, ToolPlanner shows the model the
+    tools the MCP server listed and lets it decide whether the message needs
+    a lookup; the calls it asks for go through the MCP client to the server,
+    and what comes back is sent as a TOOL RESULTS block right before the
+    message. A server that is down or an API that fails is reported to the
+    model as a failed lookup - the answer is never blocked on it.
+
     The invariants (see agent_invariants) are the fourth: the rules of the
     project that must never be broken. They are not memory - no conversation
     writes them and clearing one cannot forget them - and they are sent on
@@ -181,6 +194,9 @@ class JapaneseLearningAgent:
         task_tracker: TaskTracker | None = None,
         task_tracking_enabled: bool = AGENT_TASK_TRACKING_ENABLED,
         invariants: AgentInvariantsStorage = invariants_storage,
+        toolbox: McpToolbox | None = None,
+        tool_planner: ToolPlanner | None = None,
+        tools_enabled: bool = AGENT_MCP_TOOLS_ENABLED,
     ) -> None:
         self._history = history_storage
         self._usage_log = usage_log
@@ -194,6 +210,9 @@ class JapaneseLearningAgent:
         self._task_tracker = task_tracker or TaskTracker()
         self._task_tracking_enabled = task_tracking_enabled
         self._invariants = invariants
+        self._toolbox = toolbox or McpToolbox()
+        self._tool_planner = tool_planner or ToolPlanner()
+        self._tools_enabled = tools_enabled
 
     async def run(
         self,
@@ -208,6 +227,10 @@ class JapaneseLearningAgent:
         long_term = self._long_term.load()
         window = build_context(active, history, self._recent_kept, self._memory_layers(state, long_term))
         history_prefix = self._build_history_prefix(window)
+        # Before the prompt, because what a tool returns is part of it: the
+        # model decides whether this message needs a lookup, and the answer
+        # is written with the result in front of it.
+        tool_section, tool_calls, tool_tokens = await self._use_tools(message, history.messages)
         # Read fresh on every request rather than cached at startup: the
         # profile is meant to be changed between messages and take effect on
         # the next one.
@@ -217,6 +240,7 @@ class JapaneseLearningAgent:
             invariants_section(self._invariants.load()),
             self._profile.load().as_section(),
             state.task_state.as_section(),
+            tool_section,
         )
 
         # Let a Gemini failure here (including "context window exceeded")
@@ -255,6 +279,7 @@ class JapaneseLearningAgent:
             facts_tokens,
             memory_tokens,
             task_tokens,
+            tool_tokens,
         )
 
         return AgentChatResponse(
@@ -262,6 +287,7 @@ class JapaneseLearningAgent:
             usage=usage,
             compression=sent_context,
             strategy=active.value,
+            tool_calls=tool_calls,
         )
 
     # --- conversation ------------------------------------------------------
@@ -765,6 +791,58 @@ class JapaneseLearningAgent:
 
         return routing.tokens_used
 
+    async def _use_tools(
+        self,
+        message: str,
+        history: list[dict[str, str]],
+    ) -> tuple[str, list[AgentToolCall], int]:
+        """Let the model decide whether this message needs an MCP tool, run
+        the calls it asks for, and return the TOOL RESULTS block, the calls
+        as the response reports them, and what deciding cost.
+
+        Never raises. A server that cannot be listed is told to the model as
+        "the dictionary could not be checked"; a plan that fails means no
+        tools; a call that fails is reported as a failed lookup. Every one
+        of them still ends in an answer.
+        """
+        if not self._tools_enabled:
+            return "", [], 0
+
+        try:
+            tools = await self._toolbox.tools()
+        except McpConnectionError as error:
+            logger.warning("MCP tools unavailable: %s", error)
+            return unavailable_section(), [], 0
+
+        try:
+            plan = await self._tool_planner.plan(message, tools, history[-2:])
+        except Exception as error:  # noqa: BLE001 - best-effort, see docstring
+            logger.warning("Could not plan tool calls: %s", error)
+            return "", [], 0
+
+        results = [await self._toolbox.call(call.tool, call.arguments) for call in plan.calls]
+
+        for result in results:
+            logger.info(
+                "Agent used MCP tool %s(%s): %s",
+                result.name,
+                result.arguments,
+                "ok" if result.ok else f"failed - {result.error}",
+            )
+
+        calls = [
+            AgentToolCall(
+                tool=result.name,
+                arguments=result.arguments,
+                ok=result.ok,
+                result=result.data,
+                error=result.error,
+            )
+            for result in results
+        ]
+
+        return results_section(results), calls, plan.tokens_used
+
     async def _track_task(self, state: ConversationState, message: str) -> int:
         """Move the task on, if the learner's message calls for it.
 
@@ -877,6 +955,7 @@ class JapaneseLearningAgent:
         facts_tokens: int,
         memory_tokens: int = 0,
         task_tokens: int = 0,
+        tool_tokens: int = 0,
     ) -> None:
         """Persist what this request cost and which strategy produced it, so
         the strategies can be compared afterwards. Instrumentation only - a
@@ -895,6 +974,7 @@ class JapaneseLearningAgent:
             "facts_tokens": facts_tokens,
             "memory_tokens": memory_tokens,
             "task_tokens": task_tokens,
+            "tool_tokens": tool_tokens,
         }
 
         try:
@@ -992,6 +1072,7 @@ class JapaneseLearningAgent:
         invariants: str = "",
         profile_section: str = "",
         task_section: str = "",
+        tool_section: str = "",
     ) -> str:
         """Instructions, then what is remembered, then what may never be
         broken, then who the learner is, then where the task stands, then
@@ -1004,11 +1085,13 @@ class JapaneseLearningAgent:
         ordered from the hardest to the softest: the invariants bind
         whatever is asked, the profile is a default the learner's own
         message can override, and the task state says where to carry on
-        from, so it ends up next to the question.
+        from, so it ends up next to the question. What the tools looked up
+        for this very message comes last of all, directly above it: it is the
+        freshest and most specific thing the answer rests on.
         """
         opening = history_prefix or _INSTRUCTIONS
         request_label = "Learner's new request" if history_prefix else "Learner's request"
-        sections = [opening, invariants, profile_section, task_section]
+        sections = [opening, invariants, profile_section, task_section, tool_section]
 
         return "\n\n".join([*(section for section in sections if section), f"{request_label}: {message}"])
 

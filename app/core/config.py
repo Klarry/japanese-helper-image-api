@@ -98,3 +98,14 @@ AGENT_TASK_TRACKING_ENABLED = os.getenv("AGENT_TASK_TRACKING_ENABLED", "true").s
 # conversation and from every memory layer: nothing said in a conversation
 # writes them, and clearing a conversation cannot forget them.
 AGENT_INVARIANTS_FILE_PATH = os.getenv("AGENT_INVARIANTS_FILE_PATH", "data/agent_invariants.json")
+
+# --- Agent MCP tools (Day 17) ----------------------------------------------
+# Whether the agent may look words up through the JLPT vocabulary MCP server.
+# Deciding costs one extra Gemini call per message (like task tracking), and
+# a lookup starts the server as a subprocess; the flag switches both off.
+AGENT_MCP_TOOLS_ENABLED = os.getenv("AGENT_MCP_TOOLS_ENABLED", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}

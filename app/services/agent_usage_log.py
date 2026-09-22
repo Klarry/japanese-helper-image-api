@@ -37,6 +37,7 @@ class UsageRecord(TypedDict):
     facts_tokens: int
     memory_tokens: int
     task_tokens: int
+    tool_tokens: int
 
 
 class AgentUsageLog:

@@ -62,8 +62,9 @@ Paths for the agent's files (`AGENT_HISTORY_FILE_PATH`,
 of its memories (`AGENT_RECENT_MESSAGES_KEPT`, `AGENT_SUMMARY_UPDATE_THRESHOLD`,
 `AGENT_FACTS_LIMIT`, `AGENT_MEMORY_ENTRY_LIMIT`, `AGENT_USER_PROFILE_FILE_PATH`,
 `AGENT_PROFILE_PREFERENCES_LIMIT`, `AGENT_TASK_TRACKING_ENABLED`,
-`AGENT_INVARIANTS_FILE_PATH`) are all overridable the same way, and all have
-working defaults.
+`AGENT_INVARIANTS_FILE_PATH`, `AGENT_MCP_TOOLS_ENABLED`) are all overridable the
+same way, and all have working defaults. `JLPT_VOCAB_API_URL` points the JLPT
+vocabulary client elsewhere (default `https://jlpt-vocab-api.vercel.app/`).
 
 `GEMINI_API_KEY` is read server-side only, in `app/core/config.py`, and is never
 returned to a client or written to logs.
@@ -378,6 +379,56 @@ INFO  MCP:   - create_example_sentence(word): Give a short example sentence that
 The server is started with the same interpreter as the client and gets the
 SDK's default minimal environment, so it never sees `GEMINI_API_KEY`.
 
+## MCP tools in the agent (Day 17)
+
+The agent can now look words up in the **JLPT vocabulary API the Android app
+already uses** (`jlpt-vocab-api.vercel.app`, see `VocabApi.kt`), through MCP:
+
+```
+learner -> /agent/chat -> ToolPlanner (Gemini: does this need a lookup?)
+        -> MCP client -> mcp_servers/jlpt_vocab.py (subprocess, stdio)
+        -> app/services/jlpt_vocab_api.py -> GET api/words?word=...
+        -> structured result back through MCP -> TOOL RESULTS in the prompt
+        -> Gemini writes the answer with it
+```
+
+- `app/services/jlpt_vocab_api.py` - the backend's client for that API, on the
+  project's existing `httpx`. `search_words("学習")` returns every entry written
+  exactly that way; no such word is an empty list, a failure is
+  `JlptVocabApiError`.
+- `mcp_servers/jlpt_vocab.py` - MCP server `jlpt-vocab` with one tool,
+  `get_japanese_word_info(word)`: described, with a described and length-checked
+  `word` parameter, returning `{query, found, matches: [{word, reading, romaji,
+  meaning, jlpt_level}], source}`. An API failure is a `ToolError`, so its
+  reason reaches the caller.
+- `app/services/agent_tool_planner.py` - shows the model the tools exactly as
+  `list_tools()` returned them and lets it answer with the calls it wants, as
+  JSON, through the same `gemini_service` as everything else: no second LLM
+  integration and no provider-specific function-calling format. Calls to tools
+  the server did not list are dropped; at most three per message.
+- `app/services/agent_tools.py` - `McpToolbox`: the tool list (kept once it has
+  been read), one fresh connection per call, and the `TOOL RESULTS` block,
+  which goes into the prompt last, right above the message.
+
+`/agent/chat` reports what was called in a new `tool_calls` field: tool,
+arguments, `ok`, the result or the error. Nothing ever blocks the answer: an
+API that fails is reported to the model as a failed lookup, an MCP server that
+cannot start as "the dictionary could not be checked", an unreadable plan as
+no tools at all. Deciding costs one extra Gemini call per message, recorded as
+`tool_tokens`; `AGENT_MCP_TOOLS_ENABLED=false` switches it off.
+
+The tool can be called by hand, too:
+
+```
+python -m app.services.mcp_client --server jlpt-vocab
+python -m app.services.mcp_client --server jlpt-vocab \
+    --call get_japanese_word_info --args '{"word": "学習"}'
+```
+
+The tests run the whole path for real - the MCP server in a subprocess, the
+real HTTP client - against a local stand-in for the API that serves the live
+API's own responses, so they do not need the internet.
+
 ## Layout
 
 ```
@@ -387,6 +438,6 @@ app/api/routes/               HTTP endpoints
 app/schemas/                  Pydantic request/response models
 app/services/                 Gemini calls, image handling, prompts (incl. kanji word set)
 app/core/config.py            environment and constants
-mcp_servers/                  local MCP servers, run as subprocesses (not part of the app)
+mcp_servers/                  MCP servers, run as subprocesses (japanese_learning: Day 16, jlpt_vocab: Day 17)
 deploy/                       systemd unit
 ```

@@ -66,6 +66,7 @@ def _agent(tmp_path, name="history.json", compression_enabled=False, **compresso
         compressor=HistoryCompressor(**compressor_kwargs) if compressor_kwargs else None,
         compression_enabled=compression_enabled,
         task_tracking_enabled=False,
+        tools_enabled=False,
     )
 
 
@@ -162,13 +163,15 @@ def test_history_survives_agent_recreation(monkeypatch, tmp_path):
     _stub_generate(monkeypatch, lambda prompt: _generated())
     file_path = str(tmp_path / "history.json")
     first_agent = JapaneseLearningAgent(
-        history_storage=AgentHistoryStorage(file_path=file_path), task_tracking_enabled=False
+        history_storage=AgentHistoryStorage(file_path=file_path), task_tracking_enabled=False,
+        tools_enabled=False,
     )
 
     asyncio.run(first_agent.run("Explain the kanji 学."))
 
     restarted_agent = JapaneseLearningAgent(
-        history_storage=AgentHistoryStorage(file_path=file_path), task_tracking_enabled=False
+        history_storage=AgentHistoryStorage(file_path=file_path), task_tracking_enabled=False,
+        tools_enabled=False,
     )
 
     assert restarted_agent.get_history().messages == [

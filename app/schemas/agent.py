@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, field_validator
 
@@ -106,11 +107,29 @@ class AgentCompressionStatus(BaseModel):
     messages_sent: int = 0
 
 
+class AgentToolCall(BaseModel):
+    """One MCP tool call the agent made to answer this message.
+
+    ``ok`` is False when the tool could not answer - the server was
+    unreachable or the API behind it failed - and ``error`` says why. The
+    answer was still produced; it just could not rely on this lookup.
+    """
+
+    tool: str
+    arguments: dict[str, Any] = {}
+    ok: bool = True
+    result: dict[str, Any] | str | None = None
+    error: str = ""
+
+
 class AgentChatResponse(BaseModel):
     response: str
     usage: AgentTokenUsage
     compression: AgentCompressionStatus
     strategy: str = ContextStrategy.FULL.value
+    # The MCP tools the agent decided to call for this message, in order.
+    # Empty when it answered without looking anything up.
+    tool_calls: list[AgentToolCall] = []
 
 
 class AgentHistoryMessage(BaseModel):
@@ -384,6 +403,7 @@ class AgentUsageEntry(BaseModel):
     facts_tokens: int = 0
     memory_tokens: int = 0
     task_tokens: int = 0
+    tool_tokens: int = 0
 
 
 class AgentUsageResponse(BaseModel):

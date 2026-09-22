@@ -1,3 +1,5 @@
+import sys
+
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
@@ -12,14 +14,19 @@ from app.services import agent_facts_extractor as facts_module
 from app.services import agent_history_compressor as compressor_module
 from app.services import agent_memory_router as memory_router_module
 from app.services import agent_task_tracker as task_tracker_module
+from app.services import agent_tool_planner as tool_planner_module
 from app.services import japanese_learning_agent as agent_module
 from app.services.agent_history_storage import AgentHistoryStorage
 from app.services.agent_invariants import AgentInvariantsStorage
 from app.services.agent_memory import AgentLongTermMemoryStorage
+from app.services.agent_tools import McpToolbox
 from app.services.agent_user_profile import AgentUserProfileStorage
 from app.services.agent_usage_log import AgentUsageLog
 from app.services.gemini_service import GeneratedText
 from app.services.japanese_learning_agent import JapaneseLearningAgent
+from app.services.mcp_client import jlpt_vocab_server_parameters
+from mcp import StdioServerParameters
+from tests.jlpt_api_standin import jlpt_api
 
 client = TestClient(app)
 
@@ -71,6 +78,8 @@ def _isolate_agent(monkeypatch, tmp_path, compression_enabled=False):
     # Off unless a test is about it, so no other test pays for the extra
     # Gemini call - the same rule the compression flag above follows.
     monkeypatch.setattr(agent_module.agent, "_task_tracking_enabled", False)
+    # Likewise the MCP tools (Day 17): a test that is about them turns them on.
+    monkeypatch.setattr(agent_module.agent, "_tools_enabled", False)
     return temp_storage
 
 
@@ -1975,3 +1984,180 @@ def test_the_eight_step_scenario_of_day_fifteen(monkeypatch, tmp_path):
     assert finished["allowed_next"] == []
     assert finished["validation_passed"] is True
     assert _transition("planning").status_code == 409
+
+
+# --- MCP tools (Day 17) ----------------------------------------------------
+#
+# The whole path, for real: /agent/chat -> the agent -> the planner -> the MCP
+# client -> `python -m mcp_servers.jlpt_vocab` in a subprocess -> the
+# backend's HTTP client for the JLPT API -> back again. Only the two Gemini
+# calls (the plan and the answer) are stubbed, and the far end of the HTTP
+# request is the local stand-in for the API.
+
+LOOKUP_学習 = '{"calls": [{"tool": "get_japanese_word_info", "arguments": {"word": "学習"}}]}'
+QUESTION = "Что означает 学習? Дай чтение и перевод."
+
+
+def _enable_tools(monkeypatch, api_url: str, server=jlpt_vocab_server_parameters):
+    monkeypatch.setenv("JLPT_VOCAB_API_URL", api_url)
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+    monkeypatch.setattr(agent_module.agent, "_tools_enabled", True)
+    monkeypatch.setattr(agent_module.agent, "_toolbox", McpToolbox(server))
+
+
+def _mock_tool_planner(monkeypatch, answer: str) -> list[str]:
+    prompts = []
+
+    async def fake_generate_text_with_usage(prompt, model=None, temperature=None):
+        prompts.append(prompt)
+        return GeneratedText(text=answer, input_tokens=240, output_tokens=25)
+
+    monkeypatch.setattr(tool_planner_module, "generate_text_with_usage", fake_generate_text_with_usage)
+    return prompts
+
+
+def test_the_agent_looks_the_word_up_through_mcp_and_answers_with_it(monkeypatch, tmp_path):
+    """3-7. The agent decides to call the tool, the word reaches the API, the
+    result comes back through MCP and is in front of the model when it
+    writes the answer - right above the question."""
+    _isolate_agent(monkeypatch, tmp_path)
+    answers = _capture_prompts(monkeypatch, response_text="学習 (がくしゅう) — изучение, N3.")
+    _mock_count_tokens(monkeypatch, 90)
+
+    with jlpt_api() as (url, received):
+        _enable_tools(monkeypatch, url)
+        plans = _mock_tool_planner(monkeypatch, LOOKUP_学習)
+        response = client.post("/agent/chat", json={"message": QUESTION})
+
+    assert response.status_code == 200
+    body = response.json()
+
+    # the planner was shown the tool list_tools() returned
+    assert "get_japanese_word_info" in plans[0]
+    # the tool got the word and asked the API with it
+    assert received == [{"path": "/api/words", "query": {"word": "学習"}}]
+    # the result came back through MCP and is reported with the answer
+    assert body["tool_calls"] == [
+        {
+            "tool": "get_japanese_word_info",
+            "arguments": {"word": "学習"},
+            "ok": True,
+            "result": {
+                "query": "学習",
+                "found": True,
+                "matches": [
+                    {
+                        "word": "学習",
+                        "reading": "がくしゅう",
+                        "romaji": "gakushū",
+                        "meaning": "study, learning",
+                        "jlpt_level": "N3",
+                    }
+                ],
+                "source": "jlpt-vocab-api.vercel.app",
+            },
+            "error": "",
+        }
+    ]
+    # and the model answered with it in front of it
+    prompt = answers[-1]
+    assert "TOOL RESULTS" in prompt
+    assert '"reading": "がくしゅう"' in prompt
+    assert '"meaning": "study, learning"' in prompt
+    assert prompt.index("TOOL RESULTS") < prompt.index(f"Learner's request: {QUESTION}")
+    assert body["response"] == "学習 (がくしゅう) — изучение, N3."
+
+
+def test_a_message_that_needs_no_lookup_starts_no_tool(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    answers = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+
+    with jlpt_api() as (url, received):
+        _enable_tools(monkeypatch, url)
+        _mock_tool_planner(monkeypatch, '{"calls": []}')
+        body = client.post("/agent/chat", json={"message": "Объясни грамматику 〜ながら"}).json()
+
+    assert body["tool_calls"] == []
+    assert received == []
+    assert "TOOL RESULTS" not in answers[-1]
+
+
+def test_an_api_failure_still_ends_in_an_answer_told_that_the_lookup_failed(monkeypatch, tmp_path):
+    """8. The API answers 503: the call is reported as failed, with the
+    reason, and the model is told to say so rather than guess."""
+    _isolate_agent(monkeypatch, tmp_path)
+    answers = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+
+    with jlpt_api(status=503) as (url, _):
+        _enable_tools(monkeypatch, url)
+        _mock_tool_planner(monkeypatch, LOOKUP_学習)
+        response = client.post("/agent/chat", json={"message": QUESTION})
+
+    assert response.status_code == 200
+    call = response.json()["tool_calls"][0]
+    assert call["ok"] is False
+    assert "status 503" in call["error"]
+    assert "FAILED" in answers[-1]
+    assert "say so plainly instead of presenting a guess" in answers[-1]
+
+
+def test_an_mcp_server_that_cannot_start_still_ends_in_an_answer(monkeypatch, tmp_path):
+    """8. No server at all: the chat still answers, and the model is told the
+    dictionary could not be checked."""
+    _isolate_agent(monkeypatch, tmp_path)
+    answers = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+    broken = lambda: StdioServerParameters(command=sys.executable, args=["-m", "mcp_servers.does_not_exist"])  # noqa: E731
+    _enable_tools(monkeypatch, "http://127.0.0.1:9/", server=broken)
+    plans = _mock_tool_planner(monkeypatch, LOOKUP_学習)
+
+    response = client.post("/agent/chat", json={"message": QUESTION})
+
+    assert response.status_code == 200
+    assert response.json()["tool_calls"] == []
+    assert plans == []
+    assert "could not be checked in the dictionary" in answers[-1]
+
+
+def test_a_plan_that_cannot_be_read_means_an_answer_without_tools(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    answers = _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+
+    with jlpt_api() as (url, received):
+        _enable_tools(monkeypatch, url)
+        _mock_tool_planner(monkeypatch, "I think you should look it up")
+        response = client.post("/agent/chat", json={"message": QUESTION})
+
+    assert response.status_code == 200
+    assert response.json()["tool_calls"] == []
+    assert received == []
+    assert "TOOL RESULTS" not in answers[-1]
+
+
+def test_deciding_is_recorded_as_tool_tokens(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+
+    with jlpt_api() as (url, _):
+        _enable_tools(monkeypatch, url)
+        _mock_tool_planner(monkeypatch, LOOKUP_学習)
+        client.post("/agent/chat", json={"message": QUESTION})
+
+    assert client.get("/agent/usage").json()["entries"][-1]["tool_tokens"] == 265
+
+
+def test_with_tools_switched_off_nothing_is_planned_or_called(monkeypatch, tmp_path):
+    _isolate_agent(monkeypatch, tmp_path)
+    _capture_prompts(monkeypatch)
+    _mock_count_tokens(monkeypatch, 90)
+    plans = _mock_tool_planner(monkeypatch, LOOKUP_学習)
+
+    body = client.post("/agent/chat", json={"message": QUESTION}).json()
+
+    assert plans == []
+    assert body["tool_calls"] == []
