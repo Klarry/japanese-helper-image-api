@@ -24,6 +24,7 @@ from app.schemas.agent import (
     AgentChatResponse,
     AgentCheckpointResponse,
     AgentCompressionStatus,
+    AgentDigestResponse,
     AgentContextResponse,
     AgentHistoryMessage,
     AgentInvariant,
@@ -82,6 +83,7 @@ from app.services.agent_task_state import (
 from app.services.agent_task_tracker import TaskTracker
 from app.services.agent_tool_planner import ToolPlanner
 from app.services.agent_tools import McpToolbox, results_section, unavailable_section
+from app.services.digest import DigestStore, DigestTaskStorage, build_digest
 from app.services.mcp_client import McpConnectionError
 from app.services.agent_user_profile import (
     AgentUserProfileStorage,
@@ -605,6 +607,28 @@ class JapaneseLearningAgent:
             "required_next": allowed_next(task_state.stage),
             "unmet_condition": f"the task is not in '{stage.value}'",
         }
+
+    # --- periodic digest ---------------------------------------------------
+
+    @staticmethod
+    def get_digest() -> AgentDigestResponse:
+        """The digest the periodic task has been building.
+
+        Read straight from the store rather than through MCP: this is a
+        readout the screen refreshes after every message, and starting a
+        server subprocess for it would cost a second each time. It is the
+        same aggregate the tool returns - one implementation, in
+        app.services.digest - so the screen and the agent cannot disagree.
+        """
+        task = DigestTaskStorage().latest()
+
+        if task is None:
+            return AgentDigestResponse(
+                found=False,
+                summary="No periodic digest has been created yet.",
+            )
+
+        return AgentDigestResponse(found=True, **build_digest(task, DigestStore().state_of(task.id)))
 
     # --- checkpoints and branches -----------------------------------------
 

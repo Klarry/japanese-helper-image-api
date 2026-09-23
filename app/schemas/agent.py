@@ -386,6 +386,31 @@ class AgentTaskValidationRequest(BaseModel):
     notes: str = ""
 
 
+class AgentDigestResponse(BaseModel):
+    """The periodic digest as the screen shows it.
+
+    The same aggregate the get_latest_digest MCP tool returns - both are
+    built by app.services.digest from the same file, so what the agent reads
+    through MCP and what the screen displays cannot drift apart.
+    """
+
+    found: bool = False
+    summary: str = ""
+    task_id: str = ""
+    query: str = ""
+    interval_seconds: int = 0
+    active: bool = False
+    runs: int = 0
+    failed_runs: int = 0
+    last_run: str = ""
+    next_run: str = ""
+    items_collected: int = 0
+    unique_words: int = 0
+    levels: dict[str, int] = {}
+    latest_items: list[dict[str, str]] = []
+    last_error: str = ""
+
+
 class AgentUsageEntry(BaseModel):
     """One recorded /agent/chat call. Every field has a default so a record
     written by an older version of the app still reads back cleanly."""

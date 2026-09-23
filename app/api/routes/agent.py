@@ -9,6 +9,7 @@ from app.schemas.agent import (
     AgentCheckpointRequest,
     AgentCheckpointResponse,
     AgentContextResponse,
+    AgentDigestResponse,
     AgentHistoryResponse,
     AgentInvariantRequest,
     AgentInvariantsResponse,
@@ -159,6 +160,14 @@ async def set_agent_invariant(
 async def delete_agent_invariant(invariant_id: str) -> AgentInvariantsResponse:
     """Remove one rule. Unknown ids are reported rather than ignored."""
     return agent.delete_invariant(invariant_id)
+
+
+@router.get("/agent/digest")
+async def agent_digest() -> AgentDigestResponse:
+    """What the periodic digest task has collected so far: how many runs,
+    when the last one was, how many words, and a line of summary. Reading it
+    changes nothing - the runs happen on their own schedule."""
+    return agent.get_digest()
 
 
 @router.get("/agent/task")

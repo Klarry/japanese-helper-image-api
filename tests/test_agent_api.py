@@ -2226,3 +2226,34 @@ def test_the_agent_reads_back_what_the_scheduled_runs_collected(monkeypatch, tmp
     assert '"runs": 2' in answers[-1]
     assert '"items_collected": 6' in answers[-1]
     assert body["response"] == "Собрано 6 слов за 2 запуска."
+
+
+def test_the_digest_readout_is_empty_before_a_task_exists(monkeypatch, tmp_path, digest_files):
+    _isolate_agent(monkeypatch, tmp_path)
+
+    body = client.get("/agent/digest").json()
+
+    assert body["found"] is False
+    assert body["runs"] == 0
+    assert "No periodic digest" in body["summary"]
+
+
+def test_the_digest_readout_reports_what_the_runs_collected(monkeypatch, tmp_path, digest_files):
+    """The same aggregate the MCP tool returns, for the screen to show."""
+    _isolate_agent(monkeypatch, tmp_path)
+    task = DigestTaskStorage().create("N5 words", 15)
+
+    with jlpt_api() as (url, _):
+        monkeypatch.setenv("JLPT_VOCAB_API_URL", url)
+        monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+        asyncio.run(collect_once(task, DigestStore()))
+
+    body = client.get("/agent/digest").json()
+
+    assert body["found"] is True
+    assert body["active"] is True
+    assert body["interval_seconds"] == 15
+    assert body["runs"] == 1
+    assert body["items_collected"] == 3
+    assert body["last_run"]
+    assert "1 run(s)" in body["summary"]
