@@ -3,9 +3,10 @@
 The tests exercise the real path: the agent, the MCP client, the MCP server
 in a real subprocess, and the backend's real HTTP client for the API. The
 only thing replaced is the far end of that HTTP request, so the suite does
-not depend on the internet. It serves ``GET /api/words?word=...`` in the
-live API's exact response shape; the entries below are copied verbatim
-from the live API.
+not depend on the internet. It serves ``GET /api/words?word=...`` and ``GET /api/words/random`` in the
+live API's exact response shapes; the entries below are copied verbatim
+from the live API. The random endpoint here is not random - it walks the
+pool in order, so a test can count what came back.
 """
 
 import json
@@ -37,7 +38,12 @@ LIVE_ENTRIES = {
             "level": 3,
         },
     ],
+    "申し訳": [
+        {"word": "申し訳", "meaning": "apology, excuse", "furigana": "もうしわけ", "romaji": "mōshiwake", "level": 3}
+    ],
 }
+
+POOL = [entry for entries in LIVE_ENTRIES.values() for entry in entries]
 
 
 @contextmanager
@@ -46,6 +52,7 @@ def jlpt_api(status: int = 200, raw_body: str | None = None) -> Iterator[tuple[s
     of requests it received (path and query), so a test can see exactly
     what reached "the API". ``status``/``raw_body`` make it misbehave."""
     received: list[dict] = []
+    served: list[str] = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 - http.server's naming
@@ -58,6 +65,11 @@ def jlpt_api(status: int = 200, raw_body: str | None = None) -> Iterator[tuple[s
             elif url.path == "/api/words":
                 words = LIVE_ENTRIES.get(query.get("word", ""), [])
                 body = json.dumps({"total": len(words), "offset": 0, "limit": 10, "words": words})
+            elif url.path == "/api/words/random":
+                level = query.get("level")
+                pool = [word for word in POOL if not level or str(word["level"]) == level] or POOL
+                body = json.dumps(pool[len(served) % len(pool)])
+                served.append(body)
             else:
                 body = json.dumps({"error": "not found"})
 

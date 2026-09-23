@@ -60,11 +60,37 @@ def test_an_error_status_is_an_api_error():
         _search("学習", transport)
 
 
-def test_a_body_that_is_not_a_word_list_is_an_api_error():
+def test_a_body_that_is_not_json_is_an_api_error():
     transport, _ = _answer(text="<html>maintenance</html>")
+
+    with pytest.raises(JlptVocabApiError, match="not JSON"):
+        _search("学習", transport)
+
+
+def test_json_that_is_not_a_word_list_is_an_api_error():
+    transport, _ = _answer(json_body={"error": "something else entirely"})
 
     with pytest.raises(JlptVocabApiError, match="not a word list"):
         _search("学習", transport)
+
+
+def test_a_random_word_comes_back_from_the_endpoint_the_app_already_uses():
+    transport, seen = _answer(json_body=LIVE_ENTRIES["学習"][0])
+
+    word = asyncio.run(jlpt_vocab_api.random_word(3, transport=transport))
+
+    assert seen[0].url.path == "/api/words/random"
+    assert seen[0].url.params["level"] == "3"
+    assert word.word == "学習"
+    assert word.level == 3
+
+
+def test_a_random_word_without_a_level_asks_for_any_level():
+    transport, seen = _answer(json_body=LIVE_ENTRIES["学"][0])
+
+    asyncio.run(jlpt_vocab_api.random_word(None, transport=transport))
+
+    assert "level" not in seen[0].url.params
 
 
 def test_an_unreachable_api_is_an_api_error():

@@ -62,9 +62,11 @@ Paths for the agent's files (`AGENT_HISTORY_FILE_PATH`,
 of its memories (`AGENT_RECENT_MESSAGES_KEPT`, `AGENT_SUMMARY_UPDATE_THRESHOLD`,
 `AGENT_FACTS_LIMIT`, `AGENT_MEMORY_ENTRY_LIMIT`, `AGENT_USER_PROFILE_FILE_PATH`,
 `AGENT_PROFILE_PREFERENCES_LIMIT`, `AGENT_TASK_TRACKING_ENABLED`,
-`AGENT_INVARIANTS_FILE_PATH`, `AGENT_MCP_TOOLS_ENABLED`) are all overridable the
-same way, and all have working defaults. `JLPT_VOCAB_API_URL` points the JLPT
-vocabulary client elsewhere (default `https://jlpt-vocab-api.vercel.app/`).
+`AGENT_INVARIANTS_FILE_PATH`, `AGENT_MCP_TOOLS_ENABLED`,
+`AGENT_DIGEST_SCHEDULER_ENABLED`, `DIGEST_TASKS_FILE_PATH`,
+`DIGEST_STORE_FILE_PATH`) are all overridable the same way, and all have
+working defaults. `JLPT_VOCAB_API_URL` points the JLPT vocabulary client
+elsewhere (default `https://jlpt-vocab-api.vercel.app/`).
 
 `GEMINI_API_KEY` is read server-side only, in `app/core/config.py`, and is never
 returned to a client or written to logs.
@@ -429,6 +431,46 @@ The tests run the whole path for real - the MCP server in a subprocess, the
 real HTTP client - against a local stand-in for the API that serves the live
 API's own responses, so they do not need the internet.
 
+## Periodic digests (Day 18)
+
+The third and fourth MCP tools do something the first two could not: outlive
+the call. `create_periodic_digest(interval_seconds, query)` writes a task;
+from then on the backend collects words from the JLPT API on that schedule,
+with nobody asking, and `get_latest_digest()` reads what has piled up.
+
+```
+"Собирай слова N5 каждые 15 секунд" -> agent -> MCP create_periodic_digest
+      -> data/digest_tasks.json
+
+every interval, in the backend:  scheduler -> JLPT API -> data/digest_store.json
+                                 (runs, words, timestamps, counters)
+
+"Покажи сводку" -> agent -> MCP get_latest_digest -> data/digest_store.json
+      -> {"runs": 3, "last_run": "...", "items_collected": 9, "summary": "..."}
+```
+
+- `app/services/digest.py` - the task, the state and one run. Two JSON files,
+  written atomically, one writer each: the MCP tool creates tasks, the
+  scheduler records runs. A run asks `api/words/random` for
+  three words, stores them with a timestamp and updates the counters; an API
+  failure is recorded as a failed run, with its reason, and the task carries on.
+- `app/services/digest_scheduler.py` - one asyncio task started with the app
+  (`lifespan` in `app/main.py`), ticking once a second. No Celery, no Redis: the
+  backend is already a long-lived asyncio program. The next run is worked out
+  from the last one, so a backend that was down for an hour does one run on the
+  way back up rather than sixty, and a restart continues the count instead of
+  starting it again.
+- `mcp_servers/jlpt_vocab.py` - the two tools. `create_periodic_digest` takes
+  the interval (10s to a day, enforced by the schema) and a free-text query; a
+  JLPT level named in the query (`"N5 words"`) is what the runs collect.
+  `get_latest_digest` returns `runs`, `failed_runs`, `last_run`, `next_run`,
+  `items_collected`, `unique_words`, `levels`, the newest items and a one-line
+  `summary`.
+
+Both files survive a restart because they are the only state there is - the
+scheduler holds nothing in memory between ticks. `AGENT_DIGEST_SCHEDULER_ENABLED=false`
+stops the running without touching the tools.
+
 ## Layout
 
 ```
@@ -438,6 +480,6 @@ app/api/routes/               HTTP endpoints
 app/schemas/                  Pydantic request/response models
 app/services/                 Gemini calls, image handling, prompts (incl. kanji word set)
 app/core/config.py            environment and constants
-mcp_servers/                  MCP servers, run as subprocesses (japanese_learning: Day 16, jlpt_vocab: Day 17)
+mcp_servers/                  MCP servers, run as subprocesses (japanese_learning: Day 16, jlpt_vocab: Days 17-18)
 deploy/                       systemd unit
 ```

@@ -21,6 +21,7 @@ JLPT_VOCAB_API_URL.
 
 import logging
 import os
+from typing import Any
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_API_URL = "https://jlpt-vocab-api.vercel.app/"
 _SEARCH_PATH = "api/words"
+_RANDOM_PATH = "api/words/random"
 _TIMEOUT_SECONDS = 10.0
 
 
@@ -43,8 +45,10 @@ class VocabWord(BaseModel):
 
 
 class _SearchPage(BaseModel):
+    # ``words`` is required on purpose: a body without it is a changed or
+    # broken API, and must not read as "no such word".
+    words: list[VocabWord]
     total: int = 0
-    words: list[VocabWord] = []
 
 
 class JlptVocabApiError(RuntimeError):
@@ -57,6 +61,27 @@ def api_url() -> str:
     return os.getenv("JLPT_VOCAB_API_URL", DEFAULT_API_URL)
 
 
+async def random_word(
+    level: int | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> VocabWord:
+    """One random entry from the JLPT list - ``api/words/random``, the very
+    endpoint the Android app already calls. ``level`` narrows it to one JLPT
+    level (1 = N1 … 5 = N5).
+
+    Raises JlptVocabApiError on the same three failures as search_words.
+    """
+    url = api_url().rstrip("/") + "/" + _RANDOM_PATH
+    params = {"level": str(level)} if level in (1, 2, 3, 4, 5) else {}
+    data = await _get_json(url, params, transport)
+
+    try:
+        return VocabWord.model_validate(data)
+    except (ValidationError, TypeError) as error:
+        logger.error("JLPT vocabulary API GET %s returned an unreadable word: %r", url, data)
+        raise JlptVocabApiError("the JLPT vocabulary API returned something that is not a word") from error
+
+
 async def search_words(word: str, transport: httpx.AsyncBaseTransport | None = None) -> list[VocabWord]:
     """Every JLPT entry written exactly as ``word``. Empty when there is none.
 
@@ -65,10 +90,25 @@ async def search_words(word: str, transport: httpx.AsyncBaseTransport | None = N
     caller could otherwise mistake a broken dictionary for a missing word.
     """
     url = api_url().rstrip("/") + "/" + _SEARCH_PATH
+    data = await _get_json(url, {"word": word}, transport)
 
     try:
+        return _SearchPage.model_validate(data).words
+    except (ValidationError, TypeError) as error:
+        logger.error("JLPT vocabulary API GET %s returned an unreadable body: %r", url, data)
+        raise JlptVocabApiError("the JLPT vocabulary API returned something that is not a word list") from error
+
+
+async def _get_json(
+    url: str,
+    params: dict[str, str],
+    transport: httpx.AsyncBaseTransport | None,
+) -> Any:
+    """One GET, with the three failures every caller has to tell apart from
+    an empty answer: unreachable, an error status, a body that is not JSON."""
+    try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS, transport=transport) as client:
-            response = await client.get(url, params={"word": word})
+            response = await client.get(url, params=params)
     except httpx.HTTPError as error:
         logger.error("JLPT vocabulary API GET %s failed: %r", url, error)
         raise JlptVocabApiError(f"the JLPT vocabulary API is unreachable ({error.__class__.__name__})") from error
@@ -78,7 +118,7 @@ async def search_words(word: str, transport: httpx.AsyncBaseTransport | None = N
         raise JlptVocabApiError(f"the JLPT vocabulary API answered with status {response.status_code}")
 
     try:
-        return _SearchPage.model_validate(response.json()).words
-    except (ValueError, ValidationError) as error:
+        return response.json()
+    except ValueError as error:
         logger.error("JLPT vocabulary API GET %s returned an unreadable body: %s", url, response.text[:300])
-        raise JlptVocabApiError("the JLPT vocabulary API returned something that is not a word list") from error
+        raise JlptVocabApiError("the JLPT vocabulary API returned something that is not JSON") from error

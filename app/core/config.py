@@ -109,3 +109,19 @@ AGENT_MCP_TOOLS_ENABLED = os.getenv("AGENT_MCP_TOOLS_ENABLED", "true").strip().l
     "yes",
     "on",
 }
+
+# --- Periodic digests (Day 18) ---------------------------------------------
+# The scheduler that runs the digest tasks created through MCP. It is an
+# asyncio task inside this process, started with the app; switching it off
+# leaves the tools working (a task can still be created and read) but
+# nothing executes them.
+AGENT_DIGEST_SCHEDULER_ENABLED = os.getenv("AGENT_DIGEST_SCHEDULER_ENABLED", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+# Where the digests live. Both are read by the MCP server subprocess too, so
+# they are passed through to it by the MCP client.
+DIGEST_TASKS_FILE_PATH = os.getenv("DIGEST_TASKS_FILE_PATH", "data/digest_tasks.json")
+DIGEST_STORE_FILE_PATH = os.getenv("DIGEST_STORE_FILE_PATH", "data/digest_store.json")

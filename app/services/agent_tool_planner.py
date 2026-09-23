@@ -28,17 +28,19 @@ logger = logging.getLogger(__name__)
 MAX_CALLS = 3
 
 _PLANNER_INSTRUCTIONS = (
-    "You decide whether answering a Japanese learner's message needs data from the tools "
-    "below. The tools look things up in a real dictionary, and your own memory is not a "
-    "substitute when the learner asks about a specific word.\n\n"
+    "You decide whether answering a Japanese learner's message needs one of the tools "
+    "below, and with which arguments. Each tool's description says what it is for - go by "
+    "that, not by a fixed idea of what tools exist. Your own memory is not a substitute "
+    "for a tool that looks something up or reads something that was collected.\n\n"
     "Rules:\n"
-    "- Call a tool when the message asks about one or more specific Japanese words or "
-    "kanji: their meaning, translation, reading, romaji or JLPT level.\n"
-    "- Pass each word exactly as it is written in Japanese in the message - never romaji, "
+    "- Call a tool when the message asks for something a tool provides.\n"
+    "- Pass Japanese words exactly as they are written in the message - never romaji, "
     "never a translation. If the message refers back to a word from the recent "
     "conversation ('this word', 'it'), pass that word.\n"
-    "- Do not call a tool for grammar explanations, exercises, small talk, or anything "
-    "that is not about a specific word.\n"
+    "- A tool that starts or changes something is called only when the learner actually "
+    "asks for that; reading what already exists never needs it.\n"
+    "- Do not call a tool for grammar explanations, exercises, small talk, or anything the "
+    "descriptions do not cover.\n"
     f"- At most {MAX_CALLS} calls.\n\n"
     "Answer with a JSON object and nothing else - no prose, no code fences:\n"
     '{"calls": [{"tool": "<tool name>", "arguments": {...}}]}\n'

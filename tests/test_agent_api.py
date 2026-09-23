@@ -1,4 +1,7 @@
+import asyncio
 import sys
+
+import pytest
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -20,6 +23,7 @@ from app.services.agent_history_storage import AgentHistoryStorage
 from app.services.agent_invariants import AgentInvariantsStorage
 from app.services.agent_memory import AgentLongTermMemoryStorage
 from app.services.agent_tools import McpToolbox
+from app.services.digest import DigestStore, DigestTaskStorage, collect_once
 from app.services.agent_user_profile import AgentUserProfileStorage
 from app.services.agent_usage_log import AgentUsageLog
 from app.services.gemini_service import GeneratedText
@@ -2161,3 +2165,64 @@ def test_with_tools_switched_off_nothing_is_planned_or_called(monkeypatch, tmp_p
 
     assert plans == []
     assert body["tool_calls"] == []
+
+
+# --- the periodic digest through the agent (Day 18) ------------------------
+
+START_DIGEST = (
+    '{"calls": [{"tool": "create_periodic_digest",'
+    ' "arguments": {"interval_seconds": 15, "query": "N5 words"}}]}'
+)
+READ_DIGEST = '{"calls": [{"tool": "get_latest_digest", "arguments": {}}]}'
+
+
+@pytest.fixture
+def digest_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("DIGEST_TASKS_FILE_PATH", str(tmp_path / "digest_tasks.json"))
+    monkeypatch.setenv("DIGEST_STORE_FILE_PATH", str(tmp_path / "digest_store.json"))
+    return tmp_path
+
+
+def test_the_agent_can_start_a_periodic_task_from_a_plain_message(monkeypatch, tmp_path, digest_files):
+    _isolate_agent(monkeypatch, tmp_path)
+    answers = _capture_prompts(monkeypatch, response_text="Хорошо, буду собирать слова каждые 15 секунд.")
+    _mock_count_tokens(monkeypatch, 90)
+
+    with jlpt_api() as (url, _):
+        _enable_tools(monkeypatch, url)
+        _mock_tool_planner(monkeypatch, START_DIGEST)
+        body = client.post(
+            "/agent/chat", json={"message": "Собирай слова уровня N5 каждые 15 секунд"}
+        ).json()
+
+    call = body["tool_calls"][0]
+    assert call["tool"] == "create_periodic_digest"
+    assert call["ok"] and call["result"]["task_id"] == "digest-1"
+    # the task is on disk, where the scheduler will find it
+    assert DigestTaskStorage().latest().interval_seconds == 15
+    assert "TOOL RESULTS" in answers[-1]
+
+
+def test_the_agent_reads_back_what_the_scheduled_runs_collected(monkeypatch, tmp_path, digest_files):
+    """The runs happen outside the request, exactly as the scheduler does
+    them; the next message reads the digest through MCP and answers with it."""
+    _isolate_agent(monkeypatch, tmp_path)
+    answers = _capture_prompts(monkeypatch, response_text="Собрано 6 слов за 2 запуска.")
+    _mock_count_tokens(monkeypatch, 90)
+    task = DigestTaskStorage().create("N5 words", 15)
+
+    with jlpt_api() as (url, _):
+        _enable_tools(monkeypatch, url)
+        asyncio.run(collect_once(task, DigestStore()))
+        asyncio.run(collect_once(task, DigestStore()))
+        _mock_tool_planner(monkeypatch, READ_DIGEST)
+        body = client.post("/agent/chat", json={"message": "Покажи сводку собранных слов"}).json()
+
+    call = body["tool_calls"][0]
+    assert call["tool"] == "get_latest_digest"
+    assert call["result"]["runs"] == 2
+    assert call["result"]["items_collected"] == 6
+    # and the model wrote its answer with that in front of it
+    assert '"runs": 2' in answers[-1]
+    assert '"items_collected": 6' in answers[-1]
+    assert body["response"] == "Собрано 6 слов за 2 запуска."

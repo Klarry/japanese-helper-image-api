@@ -50,6 +50,8 @@ _READ_TIMEOUT_SECONDS = 15.0
 # GEMINI_API_KEY above all - never reaches them.
 _PASSED_THROUGH = (
     "JLPT_VOCAB_API_URL",
+    "DIGEST_TASKS_FILE_PATH",
+    "DIGEST_STORE_FILE_PATH",
     "HTTPS_PROXY",
     "HTTP_PROXY",
     "NO_PROXY",
