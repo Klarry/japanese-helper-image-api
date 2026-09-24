@@ -125,3 +125,9 @@ AGENT_DIGEST_SCHEDULER_ENABLED = os.getenv("AGENT_DIGEST_SCHEDULER_ENABLED", "tr
 # they are passed through to it by the MCP client.
 DIGEST_TASKS_FILE_PATH = os.getenv("DIGEST_TASKS_FILE_PATH", "data/digest_tasks.json")
 DIGEST_STORE_FILE_PATH = os.getenv("DIGEST_STORE_FILE_PATH", "data/digest_store.json")
+
+# --- The MCP pipeline (Day 19) ---------------------------------------------
+# Where save_to_file puts what the chain produced, one timestamped JSON per
+# run. The MCP server subprocess is what writes them, so this is passed
+# through to it by the MCP client, like the digest files above.
+PIPELINE_DIR_PATH = os.getenv("PIPELINE_DIR_PATH", "data/pipeline")

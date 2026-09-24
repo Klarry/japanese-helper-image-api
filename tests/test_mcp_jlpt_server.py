@@ -11,6 +11,8 @@ import json
 
 import pytest
 
+from app.services.agent_pipeline import PipelineRequest, PipelineRunner
+from app.services.agent_tools import McpToolbox
 from app.services.digest import DigestStore, DigestTaskStorage, collect_once
 from app.services.mcp_client import (
     call_server_tool,
@@ -41,7 +43,14 @@ def test_the_server_starts_and_lists_the_tool():
 
     assert report.server_name == "jlpt-vocab"
     tool = {tool.name: tool for tool in report.tools}[TOOL]
-    assert {tool.name for tool in report.tools} == {TOOL, "create_periodic_digest", "get_latest_digest"}
+    assert {tool.name for tool in report.tools} == {
+        TOOL,
+        "create_periodic_digest",
+        "get_latest_digest",
+        "search",
+        "summarize",
+        "save_to_file",
+    }
     assert "JLPT" in tool.description
     assert tool.parameters == ("word",)
     assert "Japanese" in tool.input_schema["properties"]["word"]["description"]
@@ -177,3 +186,117 @@ def test_an_interval_the_schema_forbids_never_creates_a_task(digest_files):
 
     assert not result.ok
     assert not (digest_files / "digest_tasks.json").exists()
+
+
+# --- the pipeline: search -> summarize -> save_to_file (Day 19) -------------
+
+
+@pytest.fixture
+def pipeline_dir(tmp_path, monkeypatch):
+    """Where save_to_file writes, in a throwaway directory - through the same
+    variable the MCP client passes to the subprocess."""
+    directory = tmp_path / "pipeline"
+    monkeypatch.setenv("PIPELINE_DIR_PATH", str(directory))
+    return directory
+
+
+def test_the_three_pipeline_tools_are_listed_with_their_parameters():
+    tools = {tool.name: tool for tool in asyncio.run(list_server_tools(jlpt_vocab_server_parameters())).tools}
+
+    assert tools["search"].parameters == ("query",)
+    assert "Japanese" in tools["search"].input_schema["properties"]["query"]["description"]
+    assert tools["summarize"].parameters == ("findings",)
+    assert sorted(tools["save_to_file"].parameters) == ["findings", "summary"]
+
+
+def test_search_asks_the_api_and_returns_structured_findings(monkeypatch):
+    """1. The first stage gets real data from the API the app uses."""
+    with jlpt_api() as (url, received):
+        monkeypatch.setenv("JLPT_VOCAB_API_URL", url)
+        result = _call_tool("search", {"query": "学習"})
+
+    assert received == [{"path": "/api/words", "query": {"word": "学習"}}]
+    assert result.ok
+    assert result.data["found"] is True
+    assert result.data["count"] == 1
+    assert result.data["matches"][0]["reading"] == "がくしゅう"
+    assert result.data["matches"][0]["jlpt_level"] == "N3"
+    assert result.data["searched_at"]
+
+
+def test_summarize_works_on_what_search_returned_and_asks_no_one(monkeypatch):
+    """2. The second stage is given the first stage's own result, and does
+    not reach the API at all - the stand-in records no request for it."""
+    with jlpt_api() as (url, received):
+        monkeypatch.setenv("JLPT_VOCAB_API_URL", url)
+        findings = _call_tool("search", {"query": "勉強"}).data
+        requests_after_search = len(received)
+
+        result = _call_tool("summarize", {"findings": findings})
+
+        assert len(received) == requests_after_search
+
+    assert result.ok
+    assert result.data["based_on"] == 2
+    assert result.data["levels"] == {"N3": 1, "N5": 1}
+    assert result.data["words"] == ["勉強", "勉強"]
+    assert "べんきょう" in result.data["summary"]
+    assert result.data["searched_at"] == findings["searched_at"]
+
+
+def test_save_to_file_writes_a_timestamped_json_with_both_halves(monkeypatch, pipeline_dir):
+    """3. The third stage saves what it was given, under a name with a
+    timestamp in it, and says where."""
+    with jlpt_api() as (url, _):
+        monkeypatch.setenv("JLPT_VOCAB_API_URL", url)
+        findings = _call_tool("search", {"query": "学習"}).data
+        summary = _call_tool("summarize", {"findings": findings}).data
+
+    result = _call_tool("save_to_file", {"summary": summary, "findings": findings})
+
+    assert result.ok
+    assert result.data["status"] == "saved"
+    assert result.data["file_name"].endswith(".json")
+    saved = json.loads((pipeline_dir / result.data["file_name"]).read_text(encoding="utf-8"))
+    assert saved["query"] == "学習"
+    assert saved["pipeline"] == ["search", "summarize", "save_to_file"]
+    assert saved["summary"]["headline"] == summary["headline"]
+    assert saved["findings"]["matches"] == findings["matches"]
+    # The name carries the moment it was written: 20260924T101530-学習.json
+    stamp, _, _ = result.data["file_name"].partition("-")
+    assert len(stamp) == len("20260924T101530")
+    assert saved["saved_at"].startswith(stamp[:4])
+
+
+def test_the_whole_chain_runs_over_the_real_server(monkeypatch, pipeline_dir):
+    """4-5. The runner drives the real tools, over stdio, in order - and what
+    lands on disk is what the first stage found."""
+    with jlpt_api() as (url, received):
+        monkeypatch.setenv("JLPT_VOCAB_API_URL", url)
+        run = asyncio.run(
+            PipelineRunner(McpToolbox()).run(PipelineRequest("学習", ("search", "summarize", "save_to_file")))
+        )
+
+    assert [result.name for result in run.results] == ["search", "summarize", "save_to_file"]
+    assert run.completed
+    # One request to the API for the whole chain: only the first stage asks.
+    assert received == [{"path": "/api/words", "query": {"word": "学習"}}]
+    saved = json.loads((pipeline_dir / run.saved_as).read_text(encoding="utf-8"))
+    assert saved["findings"]["matches"][0]["meaning"] == "study, learning"
+    assert "がくしゅう" in saved["summary"]["summary"]
+
+
+def test_a_failing_search_stops_the_chain_before_anything_is_saved(monkeypatch, pipeline_dir):
+    """6. The API is unreachable, so stage one fails - and stages two and
+    three do not run."""
+    monkeypatch.setenv("JLPT_VOCAB_API_URL", closed_port_url())
+
+    run = asyncio.run(
+        PipelineRunner(McpToolbox()).run(PipelineRequest("学習", ("search", "summarize", "save_to_file")))
+    )
+
+    assert [result.name for result in run.results] == ["search"]
+    assert not run.completed
+    assert run.failed_at.name == "search"
+    assert run.saved_as == ""
+    assert not pipeline_dir.exists() or list(pipeline_dir.iterdir()) == []

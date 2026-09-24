@@ -71,23 +71,24 @@ class McpToolbox:
             return McpToolCallResult(name=tool, arguments=arguments, ok=False, error=str(error))
 
 
+def call_line(result: McpToolCallResult) -> str:
+    """One call and its outcome, the way every tool block writes it."""
+    call = f"{result.name}({json.dumps(result.arguments, ensure_ascii=False)})"
+    outcome = (
+        json.dumps(result.data, ensure_ascii=False)
+        if result.ok
+        else f"FAILED: {result.error}"
+    )
+
+    return f"- {call} -> {outcome}"
+
+
 def results_section(results: Sequence[McpToolCallResult]) -> str:
     """The calls and what they returned, as the model reads them."""
     if not results:
         return ""
 
-    lines = []
-
-    for result in results:
-        call = f"{result.name}({json.dumps(result.arguments, ensure_ascii=False)})"
-        outcome = (
-            json.dumps(result.data, ensure_ascii=False)
-            if result.ok
-            else f"FAILED: {result.error}"
-        )
-        lines.append(f"- {call} -> {outcome}")
-
-    return f"{_RESULTS_CAPTION}\n" + "\n".join(lines)
+    return f"{_RESULTS_CAPTION}\n" + "\n".join(call_line(result) for result in results)
 
 
 def unavailable_section() -> str:

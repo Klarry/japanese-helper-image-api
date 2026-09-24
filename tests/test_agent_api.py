@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 
 import pytest
@@ -30,7 +31,7 @@ from app.services.gemini_service import GeneratedText
 from app.services.japanese_learning_agent import JapaneseLearningAgent
 from app.services.mcp_client import jlpt_vocab_server_parameters
 from mcp import StdioServerParameters
-from tests.jlpt_api_standin import jlpt_api
+from tests.jlpt_api_standin import closed_port_url, jlpt_api
 
 client = TestClient(app)
 
@@ -2257,3 +2258,76 @@ def test_the_digest_readout_reports_what_the_runs_collected(monkeypatch, tmp_pat
     assert body["items_collected"] == 3
     assert body["last_run"]
     assert "1 run(s)" in body["summary"]
+
+
+# --- the pipeline through the agent (Day 19) -------------------------------
+#
+# One message, three tools. The planner names the stages; every argument
+# between them is the previous stage's own result, filled in by the agent.
+
+PIPELINE_PLAN = (
+    '{"calls": ['
+    '{"tool": "search", "arguments": {"query": "学習"}},'
+    '{"tool": "summarize", "arguments": {}},'
+    '{"tool": "save_to_file", "arguments": {}}]}'
+)
+PIPELINE_MESSAGE = "Найди информацию о 学習, сделай краткую сводку и сохрани её."
+
+
+@pytest.fixture
+def pipeline_dir(tmp_path, monkeypatch):
+    directory = tmp_path / "pipeline"
+    monkeypatch.setenv("PIPELINE_DIR_PATH", str(directory))
+    return directory
+
+
+def test_one_message_runs_the_whole_pipeline_and_saves_the_result(monkeypatch, tmp_path, pipeline_dir):
+    """The chain end to end through /agent/chat: search, then summarize on
+    what it found, then save_to_file on that - and a file on disk."""
+    _isolate_agent(monkeypatch, tmp_path)
+    answers = _capture_prompts(monkeypatch, response_text="Нашёл, сделал сводку и сохранил.")
+    _mock_count_tokens(monkeypatch, 90)
+
+    with jlpt_api() as (url, received):
+        _enable_tools(monkeypatch, url)
+        _mock_tool_planner(monkeypatch, PIPELINE_PLAN)
+        body = client.post("/agent/chat", json={"message": PIPELINE_MESSAGE}).json()
+
+    # three calls, in order, all of them successful
+    assert [call["tool"] for call in body["tool_calls"]] == ["search", "summarize", "save_to_file"]
+    assert all(call["ok"] for call in body["tool_calls"])
+    # only the first stage went to the API
+    assert received == [{"path": "/api/words", "query": {"word": "学習"}}]
+    # each stage was handed the previous stage's result, unchanged
+    search, summarize, save = body["tool_calls"]
+    assert summarize["arguments"]["findings"] == search["result"]
+    assert save["arguments"]["summary"] == summarize["result"]
+    assert save["arguments"]["findings"] == search["result"]
+    # and the file is really there, with both halves in it
+    saved = json.loads((pipeline_dir / save["result"]["file_name"]).read_text(encoding="utf-8"))
+    assert saved["query"] == "学習"
+    assert saved["findings"]["matches"][0]["romaji"] == "gakushū"
+    assert "がくしゅう" in saved["summary"]["summary"]
+    # the model wrote its answer with the whole chain in front of it
+    assert "PIPELINE RESULTS" in answers[-1]
+    assert f"Saved as {save['result']['file_name']}." in answers[-1]
+
+
+def test_a_pipeline_that_fails_saves_nothing_and_says_where_it_stopped(monkeypatch, tmp_path, pipeline_dir):
+    """The API is unreachable, so the first stage fails; the model is told
+    which stage stopped the chain and not to claim a file exists."""
+    _isolate_agent(monkeypatch, tmp_path)
+    answers = _capture_prompts(monkeypatch, response_text="Не удалось: словарь недоступен.")
+    _mock_count_tokens(monkeypatch, 90)
+
+    _enable_tools(monkeypatch, closed_port_url())
+    _mock_tool_planner(monkeypatch, PIPELINE_PLAN)
+    body = client.post("/agent/chat", json={"message": PIPELINE_MESSAGE}).json()
+
+    assert [call["tool"] for call in body["tool_calls"]] == ["search"]
+    assert body["tool_calls"][0]["ok"] is False
+    assert "The chain stopped at search" in answers[-1]
+    assert "do not claim anything was saved" in answers[-1]
+    assert not pipeline_dir.exists() or list(pipeline_dir.iterdir()) == []
+    # the answer itself still happened
+    assert body["response"] == "Не удалось: словарь недоступен."

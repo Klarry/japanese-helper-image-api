@@ -8,6 +8,7 @@ learner questions, so the routes never do more than call one of its methods.
 """
 
 import logging
+from collections.abc import Sequence
 from copy import deepcopy
 from datetime import datetime, timezone
 
@@ -81,10 +82,11 @@ from app.services.agent_task_state import (
     next_requirement,
 )
 from app.services.agent_task_tracker import TaskTracker
+from app.services.agent_pipeline import PipelineRunner, pipeline_request, pipeline_section
 from app.services.agent_tool_planner import ToolPlanner
 from app.services.agent_tools import McpToolbox, results_section, unavailable_section
 from app.services.digest import DigestStore, DigestTaskStorage, build_digest
-from app.services.mcp_client import McpConnectionError
+from app.services.mcp_client import McpConnectionError, McpToolCallResult
 from app.services.agent_user_profile import (
     AgentUserProfileStorage,
     UserProfile,
@@ -215,6 +217,9 @@ class JapaneseLearningAgent:
         self._toolbox = toolbox or McpToolbox()
         self._tool_planner = tool_planner or ToolPlanner()
         self._tools_enabled = tools_enabled
+        # The chain runs through the same toolbox as any single call: one
+        # server, one client, three ordinary tools (Day 19).
+        self._pipeline = PipelineRunner(self._toolbox)
 
     async def run(
         self,
@@ -844,6 +849,22 @@ class JapaneseLearningAgent:
             logger.warning("Could not plan tool calls: %s", error)
             return "", [], 0
 
+        # A plan that asks for a summary or for something saved is not three
+        # separate calls but one chain, and only the chain can fill in the
+        # arguments the planner could not know (Day 19).
+        request = pipeline_request(plan.calls)
+
+        if request is not None:
+            run = await self._pipeline.run(request)
+            logger.info(
+                "Agent ran the MCP pipeline %s for '%s': %s",
+                " -> ".join(run.requested),
+                run.query,
+                f"saved as {run.saved_as}" if run.completed else "stopped early",
+            )
+
+            return pipeline_section(run), self._reported(run.results), plan.tokens_used
+
         results = [await self._toolbox.call(call.tool, call.arguments) for call in plan.calls]
 
         for result in results:
@@ -854,7 +875,12 @@ class JapaneseLearningAgent:
                 "ok" if result.ok else f"failed - {result.error}",
             )
 
-        calls = [
+        return results_section(results), self._reported(results), plan.tokens_used
+
+    @staticmethod
+    def _reported(results: Sequence[McpToolCallResult]) -> list[AgentToolCall]:
+        """The calls as the response carries them back to the screen."""
+        return [
             AgentToolCall(
                 tool=result.name,
                 arguments=result.arguments,
@@ -864,8 +890,6 @@ class JapaneseLearningAgent:
             )
             for result in results
         ]
-
-        return results_section(results), calls, plan.tokens_used
 
     async def _track_task(self, state: ConversationState, message: str) -> int:
         """Move the task on, if the learner's message calls for it.

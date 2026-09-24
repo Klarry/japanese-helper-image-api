@@ -5,13 +5,19 @@ to. This one does real work: it asks the same JLPT vocabulary API the Android
 app reads its words from, through the backend's own client for it
 (app.services.jlpt_vocab_api), and hands the answer back as structured data.
 
-Three tools, two kinds. ``get_japanese_word_info`` answers now (Day 17).
+Six tools, three kinds. ``get_japanese_word_info`` answers now (Day 17).
 ``create_periodic_digest`` and ``get_latest_digest`` (Day 18) work on a task
 that outlives the call: creating one writes it to disk, the backend's
 scheduler runs it on its own from then on, and reading the digest is reading
 what those runs have piled up. This process does not run anything itself -
 it is a subprocess that ends when the call does, which is exactly why the
 runs belong to the backend.
+
+``search``, ``summarize`` and ``save_to_file`` (Day 19) are one chain: each
+takes what the one before it returned. They are three separate tools rather
+than one because the agent should be able to stop after any of them, and
+because a step that fails must stop the chain where it failed - which is
+only visible if the steps are visible.
 
 Run it from the project root as a module, so ``app`` is importable:
 
@@ -37,6 +43,9 @@ from app.services.digest import (
     build_digest,
 )
 from app.services.jlpt_vocab_api import JlptVocabApiError, search_words
+from app.services.pipeline_tools import save_to_file as save_result
+from app.services.pipeline_tools import search as run_search
+from app.services.pipeline_tools import summarize as summarize_findings
 
 SERVER_NAME = "jlpt-vocab"
 SERVER_VERSION = "1.0.0"
@@ -46,8 +55,9 @@ server = MCPServer(
     SERVER_NAME,
     version=SERVER_VERSION,
     instructions=(
-        "Look up Japanese words and kanji in the JLPT vocabulary list (N5 to N1), and keep "
-        "a periodic digest of words collected from it."
+        "Look up Japanese words and kanji in the JLPT vocabulary list (N5 to N1), keep "
+        "a periodic digest of words collected from it, and run the search -> summarize -> "
+        "save_to_file chain over it."
     ),
 )
 
@@ -207,6 +217,108 @@ def get_latest_digest() -> LatestDigest:
         )
 
     return LatestDigest(found=True, **build_digest(task, DigestStore().state_of(task.id)))
+
+
+# --- the pipeline: search -> summarize -> save_to_file (Day 19) -------------
+#
+# The three stages are ordinary tools, and each one's input is the previous
+# one's output - that is the whole contract. The agent runs them in order
+# (app/services/agent_pipeline.py); nothing here knows about the others, so
+# any of them can also be called on its own.
+
+
+class SearchFindings(BaseModel):
+    """What ``search`` found - and what ``summarize`` and ``save_to_file``
+    expect to be given back, unchanged."""
+
+    query: str = Field(description="What was searched for")
+    found: bool = Field(description="Whether the JLPT list has anything spelled exactly like it")
+    count: int = Field(default=0, description="How many entries were found")
+    matches: list[WordMatch] = Field(default_factory=list, description="The entries themselves")
+    source: str = Field(default=SOURCE, description="Where the data came from")
+    searched_at: str = Field(default="", description="When the search ran, UTC")
+
+
+@server.tool(title="Search")
+async def search(
+    query: Annotated[
+        str,
+        Field(
+            description=(
+                "A Japanese word or kanji to look up, written in Japanese exactly as it "
+                "appears - for example 学習 or 勉強. Not romaji, not a translation."
+            ),
+            min_length=1,
+            max_length=40,
+        ),
+    ],
+) -> SearchFindings:
+    """Stage 1 of the search -> summarize -> save_to_file chain: look the query up in the JLPT
+    vocabulary API the app uses and return the findings as structured data. Use this when the
+    learner wants the result summarised or saved; a plain question about one word is answered
+    with get_japanese_word_info instead."""
+    try:
+        return SearchFindings(**await run_search(query))
+    except JlptVocabApiError as error:
+        raise ToolError(str(error)) from error
+
+
+class PipelineSummary(BaseModel):
+    """What ``summarize`` made of the findings."""
+
+    query: str = Field(description="What was searched for")
+    headline: str = Field(description="One line naming the query and what was found")
+    summary: str = Field(description="The summary itself, in a few sentences")
+    based_on: int = Field(default=0, description="How many entries it was made from")
+    levels: dict[str, int] = Field(default_factory=dict, description="JLPT levels among them")
+    words: list[str] = Field(default_factory=list, description="The words it covers")
+    source: str = Field(default=SOURCE, description="Where the findings came from")
+    searched_at: str = Field(default="", description="When the search behind it ran, UTC")
+    summarized_at: str = Field(default="", description="When this summary was made, UTC")
+
+
+@server.tool(title="Summarize")
+def summarize(
+    findings: Annotated[
+        SearchFindings,
+        Field(description="Exactly what search returned, passed through unchanged."),
+    ],
+) -> PipelineSummary:
+    """Stage 2 of the chain: turn what search returned into a short summary. This tool does not
+    search - it only reads the findings it is given, so it can never disagree with them. Give it
+    the result of a search that has already run."""
+    return PipelineSummary(**summarize_findings(findings.model_dump()))
+
+
+class SavedResult(BaseModel):
+    """Where the chain's result ended up."""
+
+    status: str = Field(description="'saved' when the file is on disk")
+    file_name: str = Field(description="The name it was saved under, with a timestamp in it")
+    path: str = Field(description="Its path, relative to the backend's working directory")
+    bytes_written: int = Field(default=0, description="How large the file is")
+    query: str = Field(default="", description="What the saved result is about")
+    saved_at: str = Field(default="", description="When it was written, UTC")
+
+
+@server.tool(title="Save to file")
+def save_to_file(
+    summary: Annotated[
+        PipelineSummary,
+        Field(description="Exactly what summarize returned."),
+    ],
+    findings: Annotated[
+        SearchFindings,
+        Field(description="The search findings the summary was made from, so the file keeps both."),
+    ],
+) -> SavedResult:
+    """Stage 3 of the chain: write the summary, together with the findings it was made from, to a
+    timestamped JSON file, and report the file name and whether it was saved. Nothing is
+    recomputed here - what is saved is what the previous stages returned."""
+    try:
+        return SavedResult(**save_result(summary.model_dump(), findings.model_dump()))
+    except OSError as error:
+        raise ToolError(f"could not save the result: {error}") from error
 
 
 if __name__ == "__main__":

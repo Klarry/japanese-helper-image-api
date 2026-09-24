@@ -471,6 +471,53 @@ Both files survive a restart because they are the only state there is - the
 scheduler holds nothing in memory between ticks. `AGENT_DIGEST_SCHEDULER_ENABLED=false`
 stops the running without touching the tools.
 
+## The tool pipeline (Day 19)
+
+One message - *"look 学習 up, summarise it and save it"* - runs three MCP
+tools in a row, each on what the one before it returned:
+
+```
+search  ->  summarize  ->  save_to_file
+  |            |               |
+  |            |               +- data/pipeline/20260924T170535-学習.json
+  |            +- a few sentences, made only from what search returned
+  +- the JLPT vocabulary API the app already uses
+```
+
+- `mcp_servers/jlpt_vocab.py` - the three tools, on the same server as the
+  Day 17-18 ones. `search(query)` returns the findings; `summarize(findings)`
+  takes them and has no client of its own, so it cannot look anything up;
+  `save_to_file(summary, findings)` writes both halves and reports the file
+  name. Each one can also be called on its own.
+- `app/services/pipeline_tools.py` - what the three of them do. Nothing new
+  underneath: the same JLPT client as Day 17 and the same atomic JSON write
+  as the digests (`app/services/json_store.py`).
+- `app/services/agent_pipeline.py` - the chain. The planner names the stages;
+  it cannot supply their arguments, because the second stage's input is the
+  first stage's output. So the plan is read as a destination - the furthest
+  stage it names is how far the chain goes - and the runner fills in
+  everything in between. A plan naming only `search` is a lookup, not a
+  chain, and takes the ordinary single-call path.
+- A stage that fails ends the run there: the later stages are not attempted,
+  nothing is written, and the prompt block names the stage and the reason, so
+  the answer tells the learner rather than inventing a file.
+
+`PIPELINE_DIR_PATH` (default `data/pipeline`) is where the results go, one
+timestamped JSON per run, with the summary and the findings it was made from:
+
+```json
+{
+  "saved_at": "2026-09-24T17:05:35+00:00",
+  "query": "学習",
+  "pipeline": ["search", "summarize", "save_to_file"],
+  "summary": { "headline": "'学習': 1 JLPT entry, N3 x1.", "based_on": 1, "levels": { "N3": 1 } },
+  "findings": { "found": true, "count": 1, "matches": [ { "word": "学習", "reading": "がくしゅう" } ] }
+}
+```
+
+Nothing about this is on the device: the app sends the same message to the
+same `/agent/chat` and shows the three tool names it gets back.
+
 ## Layout
 
 ```
@@ -480,6 +527,6 @@ app/api/routes/               HTTP endpoints
 app/schemas/                  Pydantic request/response models
 app/services/                 Gemini calls, image handling, prompts (incl. kanji word set)
 app/core/config.py            environment and constants
-mcp_servers/                  MCP servers, run as subprocesses (japanese_learning: Day 16, jlpt_vocab: Days 17-18)
+mcp_servers/                  MCP servers, run as subprocesses (japanese_learning: Day 16, jlpt_vocab: Days 17-19)
 deploy/                       systemd unit
 ```

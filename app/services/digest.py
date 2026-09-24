@@ -22,7 +22,6 @@ Like the rest of the project, this module stays clear of app.core.config -
 the MCP subprocess imports it without GEMINI_API_KEY in its environment.
 """
 
-import json
 import logging
 import os
 import re
@@ -33,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from app.services.jlpt_vocab_api import JlptVocabApiError, VocabWord, random_word
+from app.services.json_store import read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -193,26 +193,15 @@ def _text(value: Any) -> str:
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     """Write, then move into place: the other process never reads a file that
-    is half written."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(temporary, path)
+    is half written. Shared with the pipeline's saved results, which want the
+    same guarantee."""
+    write_json(path, data)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
     """Fail-safe like every other store here: a missing or broken file reads
     as empty rather than raising."""
-    if not path.exists():
-        return {}
-
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        logger.warning("Could not read %s: %s", path, error)
-        return {}
-
-    return data if isinstance(data, dict) else {}
+    return read_json(path)
 
 
 class DigestTaskStorage:
