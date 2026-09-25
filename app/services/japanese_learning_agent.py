@@ -86,7 +86,7 @@ from app.services.agent_pipeline import PipelineRunner, pipeline_request, pipeli
 from app.services.agent_tool_planner import ToolPlanner
 from app.services.agent_tools import McpToolbox, results_section, unavailable_section
 from app.services.digest import DigestStore, DigestTaskStorage, build_digest
-from app.services.mcp_client import McpConnectionError, McpToolCallResult
+from app.services.mcp_client import McpToolCallResult
 from app.services.agent_user_profile import (
     AgentUserProfileStorage,
     UserProfile,
@@ -829,18 +829,20 @@ class JapaneseLearningAgent:
         the calls it asks for, and return the TOOL RESULTS block, the calls
         as the response reports them, and what deciding cost.
 
-        Never raises. A server that cannot be listed is told to the model as
-        "the dictionary could not be checked"; a plan that fails means no
-        tools; a call that fails is reported as a failed lookup. Every one
-        of them still ends in an answer.
+        Never raises. No server that can be listed at all is told to the
+        model as "the dictionary could not be checked"; a plan that fails
+        means no tools; a call that fails is reported as a failed lookup.
+        Every one of them still ends in an answer.
         """
         if not self._tools_enabled:
             return "", [], 0
 
-        try:
-            tools = await self._toolbox.tools()
-        except McpConnectionError as error:
-            logger.warning("MCP tools unavailable: %s", error)
+        tools = await self._toolbox.tools()
+
+        if not tools:
+            # Discovery never raises - a server that cannot be reached is
+            # simply left out. Nothing at all means every server is down.
+            logger.warning("[Orchestrator] No MCP server could be reached")
             return unavailable_section(), [], 0
 
         try:
@@ -863,7 +865,9 @@ class JapaneseLearningAgent:
                 f"saved as {run.saved_as}" if run.completed else "stopped early",
             )
 
-            return pipeline_section(run), self._reported(run.results), plan.tokens_used
+            reported = self._reported(run.results, dict(zip([r.name for r in run.results], run.servers)))
+
+            return pipeline_section(run), reported, plan.tokens_used
 
         results = [await self._toolbox.call(call.tool, call.arguments) for call in plan.calls]
 
@@ -875,14 +879,21 @@ class JapaneseLearningAgent:
                 "ok" if result.ok else f"failed - {result.error}",
             )
 
-        return results_section(results), self._reported(results), plan.tokens_used
+        return results_section(results), self._reported(results, await self._toolbox.routing_table()), plan.tokens_used
 
     @staticmethod
-    def _reported(results: Sequence[McpToolCallResult]) -> list[AgentToolCall]:
-        """The calls as the response carries them back to the screen."""
+    def _reported(
+        results: Sequence[McpToolCallResult],
+        servers: dict[str, str] | None = None,
+    ) -> list[AgentToolCall]:
+        """The calls as the response carries them back to the screen, each
+        with the server it was routed to."""
+        routing = servers or {}
+
         return [
             AgentToolCall(
                 tool=result.name,
+                server=routing.get(result.name, ""),
                 arguments=result.arguments,
                 ok=result.ok,
                 result=result.data,

@@ -24,6 +24,7 @@ from app.services.agent_history_storage import AgentHistoryStorage
 from app.services.agent_invariants import AgentInvariantsStorage
 from app.services.agent_memory import AgentLongTermMemoryStorage
 from app.services.agent_tools import McpToolbox
+from app.services.mcp_registry import REGISTERED_SERVERS, McpServerSpec
 from app.services.digest import DigestStore, DigestTaskStorage, collect_once
 from app.services.agent_user_profile import AgentUserProfileStorage
 from app.services.agent_usage_log import AgentUsageLog
@@ -2003,12 +2004,16 @@ LOOKUP_学習 = '{"calls": [{"tool": "get_japanese_word_info", "arguments": {"wo
 QUESTION = "Что означает 学習? Дай чтение и перевод."
 
 
-def _enable_tools(monkeypatch, api_url: str, server=jlpt_vocab_server_parameters):
+def _enable_tools(monkeypatch, api_url: str, servers=REGISTERED_SERVERS):
+    """The agent, pointed at the registered MCP servers (or at a stand-in
+    set of them) and at a local stand-in for the Japanese API."""
     monkeypatch.setenv("JLPT_VOCAB_API_URL", api_url)
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
     monkeypatch.setattr(agent_module.agent, "_tools_enabled", True)
-    monkeypatch.setattr(agent_module.agent, "_toolbox", McpToolbox(server))
+    toolbox = McpToolbox(servers)
+    monkeypatch.setattr(agent_module.agent, "_toolbox", toolbox)
+    monkeypatch.setattr(agent_module.agent._pipeline, "_toolbox", toolbox)
 
 
 def _mock_tool_planner(monkeypatch, answer: str) -> list[str]:
@@ -2046,6 +2051,8 @@ def test_the_agent_looks_the_word_up_through_mcp_and_answers_with_it(monkeypatch
     assert body["tool_calls"] == [
         {
             "tool": "get_japanese_word_info",
+            # the call is reported with the server it was routed to (Day 20)
+            "server": "jlpt-vocab",
             "arguments": {"word": "学習"},
             "ok": True,
             "result": {
@@ -2116,7 +2123,11 @@ def test_an_mcp_server_that_cannot_start_still_ends_in_an_answer(monkeypatch, tm
     answers = _capture_prompts(monkeypatch)
     _mock_count_tokens(monkeypatch, 90)
     broken = lambda: StdioServerParameters(command=sys.executable, args=["-m", "mcp_servers.does_not_exist"])  # noqa: E731
-    _enable_tools(monkeypatch, "http://127.0.0.1:9/", server=broken)
+    _enable_tools(
+        monkeypatch,
+        "http://127.0.0.1:9/",
+        servers=[McpServerSpec("broken", "a server that cannot start", broken)],
+    )
     plans = _mock_tool_planner(monkeypatch, LOOKUP_学習)
 
     response = client.post("/agent/chat", json={"message": QUESTION})

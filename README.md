@@ -471,7 +471,7 @@ Both files survive a restart because they are the only state there is - the
 scheduler holds nothing in memory between ticks. `AGENT_DIGEST_SCHEDULER_ENABLED=false`
 stops the running without touching the tools.
 
-## The tool pipeline (Day 19)
+## The tool pipeline and its servers (Days 19-20)
 
 One message - *"look 学習 up, summarise it and save it"* - runs three MCP
 tools in a row, each on what the one before it returned:
@@ -484,23 +484,44 @@ search  ->  summarize  ->  save_to_file
   +- the JLPT vocabulary API the app already uses
 ```
 
-- `mcp_servers/jlpt_vocab.py` - the three tools, on the same server as the
-  Day 17-18 ones. `search(query)` returns the findings; `summarize(findings)`
-  takes them and has no client of its own, so it cannot look anything up;
-  `save_to_file(summary, findings)` writes both halves and reports the file
-  name. Each one can also be called on its own.
+- One server per stage (Day 20). `mcp_servers/japanese_data.py` offers
+  `search(query)` and is the only one that talks to the outside world;
+  `mcp_servers/processing.py` offers `summarize(findings)` and has no client
+  of any kind in it, so it cannot look anything up; `mcp_servers/storage.py`
+  offers `save_to_file(summary, findings)` and is the only one that writes.
+  Their shared shapes - what one returns and the next accepts - live in
+  `mcp_servers/pipeline_models.py`. Each tool can also be called on its own:
+
+  ```
+  python -m app.services.mcp_client --server processing
+  python -m app.services.mcp_client --server japanese-data --call search --args '{"query": "\u5b66\u7fd2"}'
+  ```
+- `app/services/mcp_registry.py` - which servers exist, what each offers and
+  where a call goes. The tools are not written down: every server is asked
+  with `list_tools()`, and the routing table is built from the answers, so a
+  server that changes its tools changes the agent's list by itself. A server
+  that cannot be reached takes only its own tools with it. Two failures are
+  told apart on purpose - a tool nobody offers, and a server that is down -
+  and both come back as a failed call rather than an exception.
 - `app/services/pipeline_tools.py` - what the three of them do. Nothing new
   underneath: the same JLPT client as Day 17 and the same atomic JSON write
   as the digests (`app/services/json_store.py`).
-- `app/services/agent_pipeline.py` - the chain. The planner names the stages;
+- `app/services/agent_pipeline.py` - the orchestrator. The planner names the stages;
   it cannot supply their arguments, because the second stage's input is the
   first stage's output. So the plan is read as a destination - the furthest
   stage it names is how far the chain goes - and the runner fills in
   everything in between. A plan naming only `search` is a lookup, not a
   chain, and takes the ordinary single-call path.
-- A stage that fails ends the run there: the later stages are not attempted,
-  nothing is written, and the prompt block names the stage and the reason, so
-  the answer tells the learner rather than inventing a file.
+- Five things end a run, each named in the log and in the prompt block: a
+  server that cannot be reached, a tool no server offers, a tool that ran and
+  failed, a server that went quiet (there is a timeout around every call),
+  and a stage whose output the next stage cannot use - that last one is the
+  failure MCP itself cannot report, since the call worked and only the data
+  did not. In every case the later stages are not attempted and nothing is
+  written.
+- Every step is logged as `[Orchestrator] …`: the request, then per stage the
+  selected tool, the server it was routed to and whether it completed, then
+  `Pipeline completed` or `Pipeline stopped at <stage>`.
 
 `PIPELINE_DIR_PATH` (default `data/pipeline`) is where the results go, one
 timestamped JSON per run, with the summary and the findings it was made from:
@@ -527,6 +548,7 @@ app/api/routes/               HTTP endpoints
 app/schemas/                  Pydantic request/response models
 app/services/                 Gemini calls, image handling, prompts (incl. kanji word set)
 app/core/config.py            environment and constants
-mcp_servers/                  MCP servers, run as subprocesses (japanese_learning: Day 16, jlpt_vocab: Days 17-19)
+mcp_servers/                  MCP servers, each run as its own subprocess (japanese_learning: Day 16,
+                              jlpt_vocab: Days 17-18, japanese_data + processing + storage: Days 19-20)
 deploy/                       systemd unit
 ```

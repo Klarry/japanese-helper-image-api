@@ -60,14 +60,23 @@ SAVED = {
 }
 
 
+# Which server each stage lives on since Day 20 - the fake registry answers
+# routing questions the same way the real one does.
+SERVERS = {"search": "japanese-data", "summarize": "processing", "save_to_file": "storage"}
+
+
 class FakeToolbox:
-    """Answers like the MCP client: one result per call, nothing raised."""
+    """Answers like the registry: routes by tool name, one result per call,
+    nothing raised."""
 
     def __init__(self, fails_at: str | None = None, error: str = "the API did not answer") -> None:
         self.calls: list[tuple[str, dict]] = []
         self._fails_at = fails_at
         self._error = error
         self._data = {"search": FINDINGS, "summarize": SUMMARY, "save_to_file": SAVED}
+
+    async def routing_table(self) -> dict[str, str]:
+        return dict(SERVERS)
 
     async def call(self, tool: str, arguments: dict) -> McpToolCallResult:
         self.calls.append((tool, arguments))

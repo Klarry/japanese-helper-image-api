@@ -1,8 +1,12 @@
-"""Day 19: running search -> summarize -> save_to_file as one chain.
+"""Days 19-20: the orchestrator - one request, three servers, in order.
 
 The learner writes one sentence - "look 学習 up, summarise it and save it" -
-and three tools run, each on what the one before it returned. Nobody picks
-the tools by hand and nobody copies data between them.
+and three tools run, each on what the one before it returned. Since Day 20
+each of them lives on a server of its own (japanese-data, processing,
+storage), so the orchestrator does two things at once: it decides the order,
+and it decides where each call goes. The second part it does not decide by
+hand - it asks the registry, which knows because every server was asked what
+it offers.
 
 Who decides what. The planner (Day 17) still decides *whether* tools are
 needed and names them; it cannot do more than that, because the arguments of
@@ -12,9 +16,13 @@ three calls: the furthest stage it names is how far the chain goes, and this
 module supplies every argument in between. A plan naming only ``search`` is
 not a pipeline at all - it is a lookup, and it takes the ordinary path.
 
-Stopping. A stage that fails ends the run there: the stages after it are not
-attempted, nothing is saved, and the prompt block says which stage failed
-and why, so the answer tells the learner instead of pretending a file exists.
+Stopping. Five things end a run, and each one says so in the log and in the
+prompt: a server that cannot be reached, a tool no server offers, a tool
+that ran and failed, a server that went quiet (timeout), and a stage that
+answered with something the next stage cannot use. In every case the stages
+after it are not attempted and nothing is saved - the point of checking the
+output of a stage is that the chain must not continue on data it cannot
+trust.
 """
 
 import logging
@@ -31,7 +39,7 @@ logger = logging.getLogger(__name__)
 SEARCH, SUMMARIZE, SAVE = STAGES
 
 _CAPTION = (
-    "PIPELINE RESULTS (ran just now, automatically, through MCP): "
+    "PIPELINE RESULTS (ran just now, automatically, through MCP, across several servers): "
     "search -> summarize -> save_to_file. Each stage was given the previous stage's result "
     "unchanged; nothing was looked up twice and nothing was invented in between. Base the "
     "answer on this data, and tell the learner what was found, what the summary says and - "
@@ -57,6 +65,8 @@ class PipelineRun(NamedTuple):
     query: str
     requested: tuple[str, ...]
     results: tuple[McpToolCallResult, ...]
+    #: The server each result came from, by the same index.
+    servers: tuple[str, ...] = ()
 
     @property
     def completed(self) -> bool:
@@ -75,6 +85,9 @@ class PipelineRun(NamedTuple):
                 return str(result.data.get("file_name") or "")
 
         return ""
+
+    def server_of(self, index: int) -> str:
+        return self.servers[index] if index < len(self.servers) else ""
 
 
 def pipeline_request(calls: Sequence[PlannedCall]) -> PipelineRequest | None:
@@ -97,7 +110,7 @@ def pipeline_request(calls: Sequence[PlannedCall]) -> PipelineRequest | None:
     query = _query_in(calls)
 
     if not query:
-        logger.warning("A pipeline was planned without anything to search for; ignoring it")
+        logger.warning("[Orchestrator] A pipeline was planned without anything to search for")
         return None
 
     return PipelineRequest(query, STAGES[: furthest + 1])
@@ -123,43 +136,100 @@ def _query_in(calls: Sequence[PlannedCall]) -> str:
     return ""
 
 
+def usable(stage: str, data: Any) -> str:
+    """Whether the next stage can be given this stage's output.
+
+    Returns "" when it can, and what is wrong with it when it cannot. A tool
+    that answers ``ok`` with something unusable is the one failure the MCP
+    layer cannot catch - the call worked, the data did not - so the chain
+    checks it before it hands it on.
+    """
+    if not isinstance(data, dict):
+        return f"{stage} returned {type(data).__name__}, not an object"
+
+    if stage == SEARCH:
+        if not isinstance(data.get("matches"), list):
+            return "search returned no 'matches' list"
+
+        if not str(data.get("query", "")).strip():
+            return "search returned no 'query'"
+
+    if stage == SUMMARIZE and not str(data.get("summary", "")).strip():
+        return "summarize returned an empty 'summary'"
+
+    return ""
+
+
 class PipelineRunner:
-    """Runs the stages in order, feeding each one the last one's result."""
+    """Runs the stages in order, each on the server that offers it, feeding
+    each one the last one's result."""
 
     def __init__(self, toolbox: McpToolbox) -> None:
         self._toolbox = toolbox
 
     async def run(self, request: PipelineRequest) -> PipelineRun:
-        """Never raises: a stage that could not run comes back as a failed
-        result, which ends the run the same way a tool error does."""
+        """Never raises: a stage that could not run, or answered with
+        something unusable, comes back as a failed result, which ends the run
+        the same way a tool error does."""
+        logger.info("[Orchestrator] User request received: %r", request.query)
+
         results: list[McpToolCallResult] = []
+        servers: list[str] = []
         findings: dict[str, Any] | None = None
         summary: dict[str, Any] | None = None
 
         for stage in request.stages:
-            arguments = self._arguments(stage, request.query, findings, summary)
-            result = await self._toolbox.call(stage, arguments)
-            results.append(result)
+            logger.info("[Orchestrator] Selected tool: %s", stage)
+            server = await self._server_for(stage)
+            logger.info("[Orchestrator] Server: %s", server)
 
-            logger.info(
-                "Pipeline %s/%s: %s -> %s",
-                len(results),
-                len(request.stages),
-                stage,
-                "ok" if result.ok else f"failed - {result.error}",
-            )
+            result = await self._toolbox.call(stage, self._arguments(stage, request.query, findings, summary))
+            results.append(result)
+            servers.append(server)
 
             if not result.ok:
+                logger.warning("[Orchestrator] %s failed on %s: %s", stage, server, result.error)
                 break
 
-            data = result.data if isinstance(result.data, dict) else {}
+            problem = usable(stage, result.data)
+
+            if problem:
+                logger.warning("[Orchestrator] %s returned an unusable result: %s", stage, problem)
+                results[-1] = McpToolCallResult(
+                    name=result.name,
+                    arguments=result.arguments,
+                    ok=False,
+                    data=result.data,
+                    error=f"invalid output from {stage}: {problem}",
+                )
+                break
+
+            logger.info("[Orchestrator] %s completed", stage)
 
             if stage == SEARCH:
-                findings = data
+                findings = result.data
             elif stage == SUMMARIZE:
-                summary = data
+                summary = result.data
 
-        return PipelineRun(request.query, request.stages, tuple(results))
+        run = PipelineRun(request.query, request.stages, tuple(results), tuple(servers))
+
+        if run.completed:
+            logger.info("[Orchestrator] Pipeline completed%s", f": saved as {run.saved_as}" if run.saved_as else "")
+        else:
+            logger.warning(
+                "[Orchestrator] Pipeline stopped at %s",
+                run.failed_at.name if run.failed_at else "an unknown stage",
+            )
+
+        return run
+
+    async def _server_for(self, stage: str) -> str:
+        """Which server this stage is routed to, for the log and the report.
+        An unknown tool is not raised here - the call itself reports it, in
+        one place, the same way an unreachable server is reported."""
+        table = await self._toolbox.routing_table()
+
+        return table.get(stage, "unknown")
 
     @staticmethod
     def _arguments(
@@ -168,7 +238,7 @@ class PipelineRunner:
         findings: dict[str, Any] | None,
         summary: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        """The one place data crosses between stages."""
+        """The one place data crosses between stages - and between servers."""
         if stage == SEARCH:
             return {"query": query}
 
@@ -179,10 +249,14 @@ class PipelineRunner:
 
 
 def pipeline_section(run: PipelineRun) -> str:
-    """The chain as the model reads it: every stage, its arguments and what
-    it returned - and, when it stopped early, where and why."""
+    """The chain as the model reads it: every stage, the server it ran on,
+    its arguments and what it returned - and, when it stopped early, where
+    and why."""
     lines = [_CAPTION, f"Requested chain: {' -> '.join(run.requested)} for '{run.query}'."]
-    lines.extend(call_line(result) for result in run.results)
+
+    for index, result in enumerate(run.results):
+        server = run.server_of(index)
+        lines.append(f"{call_line(result)}   [server: {server}]" if server else call_line(result))
 
     stopped = run.failed_at
 

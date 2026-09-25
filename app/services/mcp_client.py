@@ -123,20 +123,47 @@ def local_server_parameters() -> StdioServerParameters:
     )
 
 
-def jlpt_vocab_server_parameters() -> StdioServerParameters:
-    """The JLPT vocabulary server, run as a module from the project root so
-    it can import the backend's client for the API."""
+def module_server_parameters(module: str) -> StdioServerParameters:
+    """One of this project's servers, run as a module from the project root
+    so it can import the backend's own services, with the part of the
+    environment it needs passed through."""
     return StdioServerParameters(
         command=sys.executable,
-        args=["-m", "mcp_servers.jlpt_vocab"],
+        args=["-m", module],
         cwd=str(_PROJECT_ROOT),
         env={name: os.environ[name] for name in _PASSED_THROUGH if name in os.environ},
     )
 
 
+def jlpt_vocab_server_parameters() -> StdioServerParameters:
+    """The JLPT vocabulary server: single-word lookups and the periodic digest."""
+    return module_server_parameters("mcp_servers.jlpt_vocab")
+
+
+def japanese_data_server_parameters() -> StdioServerParameters:
+    """Server #1 of the chain: search, over the JLPT vocabulary API."""
+    return module_server_parameters("mcp_servers.japanese_data")
+
+
+def processing_server_parameters() -> StdioServerParameters:
+    """Server #2 of the chain: summarize, with no client of its own."""
+    return module_server_parameters("mcp_servers.processing")
+
+
+def storage_server_parameters() -> StdioServerParameters:
+    """Server #3 of the chain: save_to_file, the only one that writes."""
+    return module_server_parameters("mcp_servers.storage")
+
+
+# Every server this project can start, by the name it answers to. The agent
+# reaches them through app/services/mcp_registry.py; this map is also what
+# the CLI below takes for --server.
 SERVERS = {
     "japanese-learning": local_server_parameters,
     "jlpt-vocab": jlpt_vocab_server_parameters,
+    "japanese-data": japanese_data_server_parameters,
+    "processing": processing_server_parameters,
+    "storage": storage_server_parameters,
 }
 
 

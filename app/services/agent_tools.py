@@ -1,10 +1,10 @@
-"""Day 17: the agent's toolbox - one MCP server, reached through the MCP client.
+"""Day 17: the agent's toolbox - the MCP servers, reached through the MCP client.
 
-The agent does not know how any tool works. It knows a server exists, asks
-it what it offers (list_tools, kept once it has succeeded - a server's tools
-do not change between two messages), and asks it to run one (call_tool, a
-fresh connection each time, so a server that crashed on one call cannot take
-the next one down with it).
+The agent does not know how any tool works, and since Day 20 it does not
+know where one lives either. It asks the registry what exists (discovery:
+every registered server is asked with list_tools, and what it reports is
+what the agent may use), and asks it to run one - the registry sends the
+call to the server that offers it.
 
 What comes back is turned into a TOOL RESULTS block for the prompt: the call,
 and either its data or its failure. A failure is said out loud - the model is
@@ -14,18 +14,10 @@ had succeeded.
 
 import json
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 
-from mcp import StdioServerParameters
-
-from app.services.mcp_client import (
-    McpConnectionError,
-    McpToolCallResult,
-    McpToolInfo,
-    call_server_tool,
-    jlpt_vocab_server_parameters,
-    list_server_tools,
-)
+from app.services.mcp_client import McpToolCallResult
+from app.services.mcp_registry import REGISTERED_SERVERS, McpServerRegistry, McpServerSpec
 
 logger = logging.getLogger(__name__)
 
@@ -44,31 +36,17 @@ _UNAVAILABLE_SECTION = (
 )
 
 
-class McpToolbox:
-    """One MCP server, as the agent sees it."""
+class McpToolbox(McpServerRegistry):
+    """The registered MCP servers, as the agent sees them.
 
-    def __init__(self, server: Callable[[], StdioServerParameters] = jlpt_vocab_server_parameters) -> None:
-        # A factory rather than fixed parameters: the environment the server
-        # is started with is read at connection time.
-        self._server = server
-        self._tools: tuple[McpToolInfo, ...] | None = None
+    A name of its own because that is what the agent calls it, and a
+    subclass rather than a wrapper because there is nothing to add: what the
+    agent needs from the servers - what exists, and running one thing - is
+    exactly what the registry does.
+    """
 
-    async def tools(self) -> tuple[McpToolInfo, ...]:
-        """What the server offers. Raises McpConnectionError when it cannot be
-        reached; a failure is not remembered, so the next message tries again."""
-        if self._tools is None:
-            report = await list_server_tools(self._server())
-            self._tools = report.tools
-
-        return self._tools
-
-    async def call(self, tool: str, arguments: dict) -> McpToolCallResult:
-        """Run one tool. Never raises: a server that cannot be reached comes
-        back as a failed result, the same shape as a tool that failed."""
-        try:
-            return await call_server_tool(tool, arguments, self._server())
-        except McpConnectionError as error:
-            return McpToolCallResult(name=tool, arguments=arguments, ok=False, error=str(error))
+    def __init__(self, servers: Sequence[McpServerSpec] = REGISTERED_SERVERS) -> None:
+        super().__init__(servers)
 
 
 def call_line(result: McpToolCallResult) -> str:

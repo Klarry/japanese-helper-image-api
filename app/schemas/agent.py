@@ -116,6 +116,9 @@ class AgentToolCall(BaseModel):
     """
 
     tool: str
+    #: Which MCP server the call was routed to (Day 20). Empty when the
+    #: routing table could not be read.
+    server: str = ""
     arguments: dict[str, Any] = {}
     ok: bool = True
     result: dict[str, Any] | str | None = None
