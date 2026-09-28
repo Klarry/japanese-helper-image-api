@@ -539,6 +539,63 @@ timestamped JSON per run, with the summary and the findings it was made from:
 Nothing about this is on the device: the app sends the same message to the
 same `/agent/chat` and shows the three tool names it gets back.
 
+## Document index (Day 21)
+
+A local index of the project's own documents - code, README, Android
+sources, the overview PDFs - with embeddings and metadata, built by one
+command:
+
+```
+python -m app.index_documents                    # both strategies
+python -m app.index_documents --strategy fixed
+python -m app.index_documents --strategy structural
+python -m app.index_documents --embeddings local # no API key, offline
+```
+
+The pipeline is documents -> extraction -> chunking -> embeddings -> FAISS ->
+metadata.json, and it writes:
+
+```
+data/index/fixed_size/index.faiss      vectors
+data/index/fixed_size/metadata.json    chunks[N] belongs to vector N
+data/index/structural/index.faiss
+data/index/structural/metadata.json
+data/index/comparison.json             both strategies, measured
+```
+
+**Position is the join.** FAISS holds numbers and nothing else, so the
+record for vector `N` is `metadata["chunks"][N]`. The two files are written
+in one go and `load_index` refuses a pair whose lengths disagree rather than
+answering with the wrong chunk.
+
+- `app/services/document_loader.py` - one loader for `.md`, `.txt`, `.py`,
+  `.kt`, `.java`, `.json` and `.pdf`. A PDF is turned into text here, before
+  chunking. Code and README are read from the repository so they are never a
+  stale copy; what does not live in this repository - the Android sources,
+  the overview PDFs - sits in `data/documents/`.
+- `app/services/chunking.py` - two strategies. **fixed-size** walks the text
+  in 1000-character windows overlapping by 200, so nothing falls between two
+  chunks. **structural** cuts where the author already did: Markdown by
+  headings (with the trail, "Deployment > Configuration"), Python by classes
+  and functions (parsed with `ast`, not regular expressions), Kotlin and Java
+  by their declarations, everything else by paragraphs. A block over 2000
+  characters is windowed inside itself and keeps its section name; a block
+  under 200 characters is joined to the next one, because a lone heading is
+  not worth finding.
+- `app/services/embedding_service.py` - `embed(text) -> vector`, batched,
+  over the project's existing Gemini integration
+  (`gemini_service.embed_texts`, `batchEmbedContents`). `--embeddings local`
+  swaps in a deterministic hashing vectoriser so the pipeline and its tests
+  run with no key and no network; which one produced an index is written into
+  the index's own metadata and into the comparison report.
+- `app/services/vector_index.py` - the FAISS index (flat inner product over
+  normalised vectors, i.e. cosine), plus `search()` - the one thing that
+  proves the join works.
+
+`comparison.json` is computed from the run, never written down in advance:
+documents, characters, chunks, average/min/max chunk size, overlap, embedding
+dimension and the time each stage took.
+
 ## Layout
 
 ```
@@ -548,6 +605,8 @@ app/api/routes/               HTTP endpoints
 app/schemas/                  Pydantic request/response models
 app/services/                 Gemini calls, image handling, prompts (incl. kanji word set)
 app/core/config.py            environment and constants
+app/index_documents.py        the document indexing pipeline (Day 21)
+data/documents/               the corpus that does not live in this repo (Android sources, PDFs)
 mcp_servers/                  MCP servers, each run as its own subprocess (japanese_learning: Day 16,
                               jlpt_vocab: Days 17-18, japanese_data + processing + storage: Days 19-20)
 deploy/                       systemd unit

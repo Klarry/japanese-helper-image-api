@@ -5,7 +5,9 @@ import httpx
 from fastapi import HTTPException
 
 from app.core.config import (
+    EMBEDDING_MODEL,
     GEMINI_API_KEY,
+    GEMINI_BATCH_EMBED_URL_TEMPLATE,
     GEMINI_COUNT_TOKENS_URL_TEMPLATE,
     GEMINI_GENERATE_CONTENT_URL_TEMPLATE,
     GEMINI_URL,
@@ -257,3 +259,39 @@ async def count_tokens(text: str, model: str = TEXT_MODEL) -> int:
         )
 
     return total_tokens
+
+
+async def embed_texts(texts: list[str], model: str = EMBEDDING_MODEL) -> list[list[float]]:
+    """Embed a list of texts in one request, in the order they were given.
+
+    The same key and the same error handling as every other call in this
+    module: a non-200 becomes an HTTPException with the body, so a wrong
+    model name or an exhausted quota says so instead of producing vectors
+    that are not vectors.
+    """
+    if not texts:
+        return []
+
+    url = GEMINI_BATCH_EMBED_URL_TEMPLATE.format(model=model)
+    logger.info("Calling Gemini embeddings model=%s for %d text(s)", model, len(texts))
+    payload = {
+        "requests": [
+            {"model": f"models/{model}", "content": {"parts": [{"text": text}]}} for text in texts
+        ]
+    }
+    data = await _post(url, payload)
+    embeddings = data.get("embeddings")
+
+    if not isinstance(embeddings, list) or len(embeddings) != len(texts):
+        logger.warning("Gemini embeddings response did not match the request: %r", data)
+        raise HTTPException(
+            status_code=502,
+            detail="Gemini returned an unexpected number of embeddings",
+        )
+
+    vectors = [entry.get("values") if isinstance(entry, dict) else None for entry in embeddings]
+
+    if any(not isinstance(vector, list) or not vector for vector in vectors):
+        raise HTTPException(status_code=502, detail="Gemini returned an embedding without values")
+
+    return vectors

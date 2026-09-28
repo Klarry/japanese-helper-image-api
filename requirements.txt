@@ -5,3 +5,7 @@ pydantic
 pillow
 python-dotenv
 mcp>=2.2,<3
+# Document indexing (Day 21): local vector index, PDF text, vector maths.
+faiss-cpu
+pypdf
+numpy

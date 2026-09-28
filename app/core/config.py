@@ -20,8 +20,16 @@ GEMINI_GENERATE_CONTENT_URL_TEMPLATE = (
 GEMINI_COUNT_TOKENS_URL_TEMPLATE = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:countTokens"
 )
+# Embeddings for the document index (Day 21). Same API and same key as
+# every other call here - batchEmbedContents takes a list of texts in one
+# request, which is what makes indexing a few hundred chunks quick.
+GEMINI_BATCH_EMBED_URL_TEMPLATE = (
+    "https://generativelanguage.googleapis.com/v1beta/models/{model}:batchEmbedContents"
+)
 IMAGE_SEARCH_MODEL = "gemini-3.1-flash-image"
 TEXT_MODEL = "gemini-3.5-flash"
+EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
+EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
 
 MAX_IMAGE_WIDTH = 800
 JPEG_QUALITY = 75

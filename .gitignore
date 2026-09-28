@@ -5,4 +5,7 @@ __pycache__/
 *.log
 .DS_Store
 *.backup
-data/
+# Runtime state lives in data/ and is not versioned - except the corpus the
+# indexing pipeline reads, which has to travel with the project (Day 21).
+data/*
+!data/documents/
