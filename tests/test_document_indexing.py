@@ -485,6 +485,7 @@ def test_the_report_is_computed_from_the_run_not_written_down(tmp_path):
         strategy="both",
         index_dir=str(tmp_path),
         embeddings="local",
+        embedding_model="unused-by-the-local-backend",
         chunk_size=1000,
         overlap=200,
     )
@@ -525,3 +526,70 @@ def test_the_report_matches_what_the_chunker_really_produced():
     assert report["average_chunk_size"] == round(sum(sizes) / len(sizes), 1)
     assert report["min_chunk_size"] == min(sizes)
     assert report["max_chunk_size"] == max(sizes)
+
+
+# --- the read-only view the app sees ----------------------------------------
+
+
+def test_the_summary_is_empty_before_anything_is_indexed(tmp_path):
+    from app.services.document_index import read_summary
+
+    summary = read_summary(tmp_path / "comparison.json")
+
+    assert summary.found is False
+    assert summary.documents == 0
+
+
+def test_the_summary_reads_what_the_run_wrote(tmp_path):
+    from app.services.document_index import read_summary
+
+    asyncio.run(
+        run(Namespace(strategy="both", index_dir=str(tmp_path), embeddings="local",
+                      embedding_model="unused", chunk_size=1000, overlap=200))
+    )
+
+    summary = read_summary(tmp_path / "comparison.json")
+    report = json.loads((tmp_path / "comparison.json").read_text(encoding="utf-8"))
+
+    assert summary.found is True
+    assert summary.documents == report["corpus"]["documents"]
+    assert summary.fixed_chunks == report["strategies"][FIXED]["chunks"]
+    assert summary.structural_chunks == report["strategies"][STRUCTURAL]["chunks"]
+    assert summary.embedding_dimension == 768
+    assert summary.embedding_model == LOCAL_NAME
+
+
+def test_a_broken_report_reads_as_no_index(tmp_path):
+    from app.services.document_index import read_summary
+
+    path = tmp_path / "comparison.json"
+    path.write_text("{not json", encoding="utf-8")
+
+    assert read_summary(path).found is False
+
+
+def test_the_endpoint_reports_the_index_without_loading_it(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.api.routes import agent as route_module
+    from app.main import app
+    from app.services.document_index import IndexSummary
+
+    monkeypatch.setattr(
+        route_module,
+        "read_summary",
+        lambda: IndexSummary(True, 62, 423830, 546, 623, "gemini-embedding-001", 768, "2026-09-28T17:48:29+0000"),
+    )
+
+    body = TestClient(app).get("/agent/documents").json()
+
+    assert body == {
+        "found": True,
+        "documents": 62,
+        "total_characters": 423830,
+        "fixed_chunks": 546,
+        "structural_chunks": 623,
+        "embedding_model": "gemini-embedding-001",
+        "embedding_dimension": 768,
+        "built_at": "2026-09-28T17:48:29+0000",
+    }

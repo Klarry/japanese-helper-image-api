@@ -10,6 +10,7 @@ from app.schemas.agent import (
     AgentCheckpointResponse,
     AgentContextResponse,
     AgentDigestResponse,
+    AgentDocumentIndexResponse,
     AgentHistoryResponse,
     AgentInvariantRequest,
     AgentInvariantsResponse,
@@ -28,6 +29,7 @@ from app.schemas.agent import (
     AgentWorkingMemoryRequest,
     MemoryLayer,
 )
+from app.services.document_index import read_summary
 from app.services.japanese_learning_agent import agent
 
 router = APIRouter()
@@ -168,6 +170,14 @@ async def agent_digest() -> AgentDigestResponse:
     when the last one was, how many words, and a line of summary. Reading it
     changes nothing - the runs happen on their own schedule."""
     return agent.get_digest()
+
+
+@router.get("/agent/documents")
+async def agent_document_index() -> AgentDocumentIndexResponse:
+    """What the local document index holds: how many documents went in, how
+    many chunks each strategy made of them, and what embedded them. Built by
+    `python -m app.index_documents`; this only reads the report."""
+    return AgentDocumentIndexResponse(**read_summary().as_dict())
 
 
 @router.get("/agent/task")

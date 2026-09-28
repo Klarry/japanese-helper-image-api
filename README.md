@@ -596,6 +596,11 @@ answering with the wrong chunk.
 documents, characters, chunks, average/min/max chunk size, overlap, embedding
 dimension and the time each stage took.
 
+`GET /agent/documents` reads that report back as a handful of numbers - how
+many documents, how many chunks each strategy made, which model embedded
+them - which is all the Android app shows of it. Nothing about indexing runs
+on the device.
+
 ## Layout
 
 ```

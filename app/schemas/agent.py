@@ -389,6 +389,24 @@ class AgentTaskValidationRequest(BaseModel):
     notes: str = ""
 
 
+class AgentDocumentIndexResponse(BaseModel):
+    """The local document index, as the screen shows it (Day 21).
+
+    Read from the report the indexer writes; nothing here builds or loads an
+    index. ``found`` is False when no index has been built yet, which is an
+    answer rather than an error.
+    """
+
+    found: bool = False
+    documents: int = 0
+    total_characters: int = 0
+    fixed_chunks: int = 0
+    structural_chunks: int = 0
+    embedding_model: str = ""
+    embedding_dimension: int = 0
+    built_at: str = ""
+
+
 class AgentDigestResponse(BaseModel):
     """The periodic digest as the screen shows it.
 
