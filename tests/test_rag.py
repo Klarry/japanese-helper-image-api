@@ -457,3 +457,85 @@ def test_the_control_file_is_in_the_repository():
     assert QUESTIONS_FILE.exists()
     document = json.loads(QUESTIONS_FILE.read_text(encoding="utf-8"))
     assert len(document["questions"]) >= 10
+
+
+# --- the endpoint the app talks to ------------------------------------------
+
+
+def rag_route(monkeypatch, index_dir, answer_text="An answer."):
+    """The real route, over the small test index, with the model stubbed."""
+    from fastapi.testclient import TestClient
+
+    from app.api.routes import agent as route_module
+    from app.main import app
+    from app.services import rag_agent as agent_module
+
+    async def fake(prompt, model=None, temperature=None):
+        return GeneratedText(text=answer_text, input_tokens=100, output_tokens=20)
+
+    monkeypatch.setattr(agent_module, "generate_text_with_usage", fake)
+    monkeypatch.setattr(
+        route_module,
+        "rag_agent",
+        RagAgent(retriever=RAGRetriever(strategy=STRUCTURAL, index_dir=index_dir)),
+    )
+
+    return TestClient(app)
+
+
+def test_the_endpoint_answers_with_retrieval_and_says_where_from(monkeypatch, index_dir):
+    client = rag_route(monkeypatch, index_dir)
+
+    body = client.post(
+        "/agent/rag",
+        json={"question": "how often does the scheduler tick?", "use_rag": True, "top_k": 3},
+    ).json()
+
+    assert body["rag_enabled"] is True
+    assert len(body["retrieved_chunks"]) == 3
+    assert body["sources"]
+    assert body["retrieved_chunks"][0]["file"].startswith("docs/")
+    assert body["retrieved_chunks"][0]["score"] > 0
+    assert "text" not in body["retrieved_chunks"][0], "the screen gets references, not documents"
+    assert body["top_k"] == 3
+    assert body["embedding_model"] == "local-hashing"
+
+
+def test_the_endpoint_answers_without_retrieval_when_asked(monkeypatch, index_dir):
+    client = rag_route(monkeypatch, index_dir)
+
+    body = client.post(
+        "/agent/rag", json={"question": "how often does the scheduler tick?", "use_rag": False}
+    ).json()
+
+    assert body["rag_enabled"] is False
+    assert body["retrieved_chunks"] == []
+    assert body["sources"] == []
+    assert body["retrieval_seconds"] == 0.0
+
+
+def test_the_same_question_can_be_asked_both_ways(monkeypatch, index_dir):
+    client = rag_route(monkeypatch, index_dir)
+    question = "what happens when a server cannot be reached?"
+
+    with_rag = client.post("/agent/rag", json={"question": question, "use_rag": True}).json()
+    without = client.post("/agent/rag", json={"question": question, "use_rag": False}).json()
+
+    assert with_rag["answer"] == without["answer"]  # the model is stubbed; the modes are not
+    assert with_rag["sources"] and not without["sources"]
+
+
+def test_a_missing_index_is_a_service_error_not_a_crash(monkeypatch, tmp_path):
+    client = rag_route(monkeypatch, tmp_path / "empty")
+
+    response = client.post("/agent/rag", json={"question": "anything"})
+
+    assert response.status_code == 503
+    assert "index is not available" in response.json()["detail"]
+
+
+def test_top_k_is_validated_at_the_edge(monkeypatch, index_dir):
+    client = rag_route(monkeypatch, index_dir)
+
+    assert client.post("/agent/rag", json={"question": "x", "top_k": 0}).status_code == 422
+    assert client.post("/agent/rag", json={"question": "x", "top_k": 99}).status_code == 422

@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.schemas.agent import (
     AgentBranchRequest,
@@ -16,6 +16,9 @@ from app.schemas.agent import (
     AgentInvariantsResponse,
     AgentLongTermMemoryRequest,
     AgentMemoryResponse,
+    AgentRagChunk,
+    AgentRagRequest,
+    AgentRagResponse,
     AgentShortTermMemoryRequest,
     AgentStrategyRequest,
     AgentStrategyResponse,
@@ -30,9 +33,14 @@ from app.schemas.agent import (
     MemoryLayer,
 )
 from app.services.document_index import read_summary
+from app.services.rag_agent import RagAgent
+from app.services.vector_index import VectorIndexError
 from app.services.japanese_learning_agent import agent
 
 router = APIRouter()
+# One agent for both modes, built once: its retriever loads the index lazily,
+# so importing this module costs nothing when nobody asks a question.
+rag_agent = RagAgent()
 
 
 @router.post("/agent/chat")
@@ -170,6 +178,44 @@ async def agent_digest() -> AgentDigestResponse:
     when the last one was, how many words, and a line of summary. Reading it
     changes nothing - the runs happen on their own schedule."""
     return agent.get_digest()
+
+
+@router.post("/agent/rag")
+async def agent_rag(request: AgentRagRequest) -> AgentRagResponse:
+    """Answer a question about the project's own documents (Day 22).
+
+    ``use_rag=true`` retrieves from the local index first and answers from
+    what it found, naming the files; ``use_rag=false`` asks the same model
+    the same question with nothing in front of it. One agent, one endpoint,
+    the mode decides whether there is a retrieval step in between.
+    """
+    try:
+        answer = await rag_agent.ask(request.question, use_rag=request.use_rag, top_k=request.top_k)
+    except VectorIndexError as error:
+        # Not an error in the request: nobody has built the index yet.
+        raise HTTPException(
+            status_code=503,
+            detail=f"The document index is not available: {error}",
+        ) from error
+
+    return AgentRagResponse(
+        answer=answer.answer,
+        rag_enabled=answer.rag_enabled,
+        sources=answer.sources,
+        retrieved_chunks=[
+            AgentRagChunk(
+                chunk_id=chunk.chunk_id,
+                file=chunk.file,
+                section=chunk.section,
+                score=round(chunk.score, 4),
+            )
+            for chunk in answer.retrieved_chunks
+        ],
+        top_k=answer.top_k,
+        embedding_model=answer.embedding_model,
+        retrieval_seconds=round(answer.retrieval_seconds, 3),
+        llm_seconds=round(answer.llm_seconds, 3),
+    )
 
 
 @router.get("/agent/documents")

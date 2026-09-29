@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class ContextStrategy(str, Enum):
@@ -387,6 +387,43 @@ class AgentTaskValidationRequest(BaseModel):
 
     passed: bool
     notes: str = ""
+
+
+class AgentRagRequest(BaseModel):
+    """A question for the document index (Day 22)."""
+
+    question: str
+    #: False asks the same model the same question with no context at all -
+    #: the other half of the comparison, through the same agent.
+    use_rag: bool = True
+    top_k: int = Field(default=5, ge=1, le=20)
+
+
+class AgentRagChunk(BaseModel):
+    """One chunk the search returned. The text is not sent: the screen shows
+    where an answer came from, not the documents themselves."""
+
+    chunk_id: str
+    file: str
+    section: str = ""
+    score: float = 0.0
+
+
+class AgentRagResponse(BaseModel):
+    """An answer, and what it was built on.
+
+    ``sources`` and ``retrieved_chunks`` are empty when retrieval was off -
+    nothing is reported that was not retrieved.
+    """
+
+    answer: str
+    rag_enabled: bool = False
+    sources: list[str] = []
+    retrieved_chunks: list[AgentRagChunk] = []
+    top_k: int = 0
+    embedding_model: str = ""
+    retrieval_seconds: float = 0.0
+    llm_seconds: float = 0.0
 
 
 class AgentDocumentIndexResponse(BaseModel):

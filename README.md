@@ -636,6 +636,10 @@ question -> embedding -> FAISS -> top-K chunks -> context + question -> Gemini -
   agent, a specific function, configuration, a question needing several
   documents, one where the source matters - and one whose answer is
   genuinely not in the index, where the right answer is saying so.
+- `POST /agent/rag` - the same agent behind an endpoint, so the Android app
+  can ask with `use_rag` true or false and draw the sources it gets back.
+  A question asked before the index exists answers 503 with what is missing
+  rather than a stack trace.
 - `app/evaluate_rag.py` - asks all ten in both modes and writes
   `data/rag/evaluation_results.json`: both answers, the retrieved sources,
   the scores and the latencies. What it counts automatically is only what can
