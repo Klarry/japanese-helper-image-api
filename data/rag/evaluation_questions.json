@@ -1,0 +1,79 @@
+{
+  "about": "Ten control questions for the local document index (Day 22). Every expected answer was read out of the indexed files themselves - none of it is invented, and question 10 is one the documents genuinely do not answer.",
+  "index": {
+    "strategy": "structural",
+    "built_by": "python -m app.index_documents"
+  },
+  "questions": [
+    {
+      "id": 1,
+      "category": "factual",
+      "question": "How often does the digest scheduler tick, and what is the shortest interval a periodic digest task may have?",
+      "expected": "The scheduler ticks once a second (TICK_SECONDS = 1.0) and the shortest interval a task may be created with is 10 seconds (MIN_INTERVAL_SECONDS); the longest is 86400, a day.",
+      "expected_sources": ["app/services/digest_scheduler.py", "app/services/digest.py"]
+    },
+    {
+      "id": 2,
+      "category": "architecture",
+      "question": "Which MCP servers does the project register, and what does each of them offer?",
+      "expected": "Four: japanese-data offers search, processing offers summarize, storage offers save_to_file, and jlpt-vocab offers get_japanese_word_info, create_periodic_digest and get_latest_digest.",
+      "expected_sources": ["app/services/mcp_registry.py", "README.md"]
+    },
+    {
+      "id": 3,
+      "category": "mcp",
+      "question": "What happens when one MCP server cannot be reached - does the agent lose all of its tools?",
+      "expected": "No. Discovery asks every registered server and a server that cannot be listed is logged and left out, so it takes only its own tools with it; the others keep working. An unreachable server and a tool no server offers are reported as two different failed calls rather than raised as exceptions.",
+      "expected_sources": ["app/services/mcp_registry.py"]
+    },
+    {
+      "id": 4,
+      "category": "agent",
+      "question": "What does the orchestrator do when a stage of the chain returns a result the next stage cannot use?",
+      "expected": "It stops the run at that stage: the result is turned into a failed one with the message 'invalid output from <stage>', the later stages are never called and nothing is saved. The prompt block then names the stage that stopped the chain and tells the model not to claim anything was saved.",
+      "expected_sources": ["app/services/agent_pipeline.py"]
+    },
+    {
+      "id": 5,
+      "category": "code",
+      "question": "What exactly does the usable() check require of the search stage's output?",
+      "expected": "That the output is an object, that it has a 'matches' list, and that its 'query' is not empty. For the summarize stage it requires a non-empty 'summary'.",
+      "expected_sources": ["app/services/agent_pipeline.py"]
+    },
+    {
+      "id": 6,
+      "category": "configuration",
+      "question": "Which environment variable turns the periodic digest scheduler off, and what happens to the digest tools when it is off?",
+      "expected": "AGENT_DIGEST_SCHEDULER_ENABLED=false. The tools keep working - a task can still be created and the digest read - but nothing executes the runs.",
+      "expected_sources": ["app/core/config.py", "README.md"]
+    },
+    {
+      "id": 7,
+      "category": "multi-document",
+      "question": "How does a message typed in the Android app end up running a tool in a separate process?",
+      "expected": "The app sends it to POST /agent/chat through AgentApi and AgentRepositoryImpl; the backend agent asks the planner whether tools are needed, the registry says which server offers the named tool, and the MCP client starts that server as a subprocess over stdio and calls it. The app holds no MCP client and only draws the tool calls the backend reports.",
+      "expected_sources": ["data/documents/android/AgentApi.kt", "app/services/japanese_learning_agent.py", "app/services/mcp_registry.py"]
+    },
+    {
+      "id": 8,
+      "category": "function",
+      "question": "What does save_to_file write into the JSON file it creates?",
+      "expected": "saved_at, the query, the list of pipeline stages, the summary and the findings the summary was made from - both halves, in one timestamped file - and it returns the status, file name, path and bytes written.",
+      "expected_sources": ["app/services/pipeline_tools.py", "mcp_servers/storage.py"]
+    },
+    {
+      "id": 9,
+      "category": "source-sensitive",
+      "question": "How is a chunk_id built, and what does one look like for a file in a subdirectory?",
+      "expected": "From the file's path with the separators turned into dashes and the extension dropped, plus the chunk's index in that document: 'app/services/digest.py' becomes 'app-services-digest', so a chunk id reads 'app-services-digest_12'. A file at the root keeps its stem, as in 'README_12'.",
+      "expected_sources": ["app/services/chunking.py"]
+    },
+    {
+      "id": 10,
+      "category": "not-in-the-index",
+      "question": "Which relational database does the project use to store conversations, and what are its table names?",
+      "expected": "There is no such information in the indexed documents - the project does not use a relational database at all. Everything it keeps is in JSON files on disk. A correct answer says the information is not available in the indexed documents rather than naming a database.",
+      "expected_sources": []
+    }
+  ]
+}

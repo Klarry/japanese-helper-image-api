@@ -9,3 +9,6 @@ __pycache__/
 # indexing pipeline reads, which has to travel with the project (Day 21).
 data/*
 !data/documents/
+!data/rag/
+# ...but the results of an evaluation run are output, not source.
+data/rag/evaluation_results.json

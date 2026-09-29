@@ -601,6 +601,49 @@ many documents, how many chunks each strategy made, which model embedded
 them - which is all the Android app shows of it. Nothing about indexing runs
 on the device.
 
+## Asking the index (Day 22)
+
+The first RAG query: a question, the chunks nearest to it, and an answer
+built from those chunks rather than from memory.
+
+```
+python -m app.rag "How does the MCP registry route a tool call?"
+python -m app.rag --no-rag "How does the MCP registry route a tool call?"
+python -m app.rag --top-k 3 --strategy fixed-size "How is a chunk id built?"
+python -m app.evaluate_rag              # the ten control questions, both ways
+```
+
+```
+question -> embedding -> FAISS -> top-K chunks -> context + question -> Gemini -> answer + sources
+```
+
+- `app/services/rag_retriever.py` - `retrieve(question, top_k)` over the
+  index from Day 21. It embeds the question **with whatever embedded the
+  index** - `metadata.json` records the model, and a question in the wrong
+  number of dimensions is refused rather than compared with nonsense. What
+  comes back is chunks with their file, section, position and score.
+- `app/services/rag_prompt.py` - the two prompts, kept as alike as possible
+  so the comparison changes one thing. The RAG one carries the extracts with
+  `[Source: …]` and `[Section: …]` labels and three rules: answer from this
+  and nothing else, say plainly when the answer is not there, name the file
+  and section for each statement.
+- `app/services/rag_agent.py` - one agent, two modes:
+  `ask(question, use_rag=False)` goes straight to the model,
+  `ask(question, use_rag=True)` retrieves first. The answer comes back with
+  the chunks and sources it used - and with nothing that was not retrieved.
+- `data/rag/evaluation_questions.json` - ten control questions written from
+  the indexed documents, covering a factual lookup, architecture, MCP, the
+  agent, a specific function, configuration, a question needing several
+  documents, one where the source matters - and one whose answer is
+  genuinely not in the index, where the right answer is saying so.
+- `app/evaluate_rag.py` - asks all ten in both modes and writes
+  `data/rag/evaluation_results.json`: both answers, the retrieved sources,
+  the scores and the latencies. What it counts automatically is only what can
+  be counted honestly - whether the expected source came back, how much of
+  the expected wording appears, whether an answer admitted it did not know.
+  The qualitative comparison is left to a person reading both answers, which
+  is why both are kept in full.
+
 ## Layout
 
 ```
@@ -611,6 +654,8 @@ app/schemas/                  Pydantic request/response models
 app/services/                 Gemini calls, image handling, prompts (incl. kanji word set)
 app/core/config.py            environment and constants
 app/index_documents.py        the document indexing pipeline (Day 21)
+app/rag.py                    ask the index a question, with or without RAG (Day 22)
+app/evaluate_rag.py           the ten control questions, both modes (Day 22)
 data/documents/               the corpus that does not live in this repo (Android sources, PDFs)
 mcp_servers/                  MCP servers, each run as its own subprocess (japanese_learning: Day 16,
                               jlpt_vocab: Days 17-18, japanese_data + processing + storage: Days 19-20)
