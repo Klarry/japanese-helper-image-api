@@ -139,3 +139,26 @@ DIGEST_STORE_FILE_PATH = os.getenv("DIGEST_STORE_FILE_PATH", "data/digest_store.
 # run. The MCP server subprocess is what writes them, so this is passed
 # through to it by the MCP client, like the digest files above.
 PIPELINE_DIR_PATH = os.getenv("PIPELINE_DIR_PATH", "data/pipeline")
+
+# --- Reranking and filtering (Day 23) --------------------------------------
+# The second stage after FAISS: ask for more chunks than the prompt will
+# hold, drop the ones that are not about the question at all, reorder what
+# is left, and keep the few best. Declared here with the rest of the
+# settings; read by app.services.rag_settings, which takes them from the
+# environment directly because the filter and the reranker have to run
+# without a Gemini key (the same reason embedding_service does).
+RAG_RETRIEVAL_TOP_K = int(os.getenv("RAG_RETRIEVAL_TOP_K", "10"))
+RAG_SIMILARITY_THRESHOLD = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.70"))
+RAG_FINAL_TOP_K = int(os.getenv("RAG_FINAL_TOP_K", "3"))
+RAG_SIMILARITY_WEIGHT = float(os.getenv("RAG_SIMILARITY_WEIGHT", "0.7"))
+RAG_KEYWORD_WEIGHT = float(os.getenv("RAG_KEYWORD_WEIGHT", "0.3"))
+RAG_SECTION_WEIGHT = float(os.getenv("RAG_SECTION_WEIGHT", "0.4"))
+# Whether the question is rewritten into a search query before retrieval.
+# The rewrite is used for the search only - the model always sees the
+# question the person actually asked.
+RAG_QUERY_REWRITE_ENABLED = os.getenv("RAG_QUERY_REWRITE_ENABLED", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}

@@ -17,6 +17,10 @@ from collections.abc import Sequence
 from app.services.rag_retriever import RetrievedChunk
 
 UNAVAILABLE = "not available in the indexed documents"
+# What Enhanced RAG answers when the filter keeps nothing (Day 23). No
+# model call: there is no context to reason over, and asking anyway is
+# how a confident paragraph gets built out of nothing.
+NO_CONTEXT_ANSWER = f"The information is {UNAVAILABLE}."
 
 _SHARED = (
     "You are answering questions about one software project: a FastAPI backend with an AI "

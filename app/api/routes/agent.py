@@ -17,6 +17,7 @@ from app.schemas.agent import (
     AgentLongTermMemoryRequest,
     AgentMemoryResponse,
     AgentRagChunk,
+    AgentRagDebug,
     AgentRagRequest,
     AgentRagResponse,
     AgentShortTermMemoryRequest,
@@ -182,25 +183,51 @@ async def agent_digest() -> AgentDigestResponse:
 
 @router.post("/agent/rag")
 async def agent_rag(request: AgentRagRequest) -> AgentRagResponse:
-    """Answer a question about the project's own documents (Day 22).
+    """Answer a question about the project's own documents (Days 22-23).
 
-    ``use_rag=true`` retrieves from the local index first and answers from
-    what it found, naming the files; ``use_rag=false`` asks the same model
-    the same question with nothing in front of it. One agent, one endpoint,
-    the mode decides whether there is a retrieval step in between.
+    Three modes through one agent. ``off`` asks the model the question with
+    nothing in front of it; ``baseline`` retrieves top-k from the index and
+    answers from what it found; ``enhanced`` rewrites the query for the
+    search, drops everything below the relevance threshold, reranks what is
+    left and keeps the best few - and, when nothing clears the threshold,
+    says so rather than sending the closest chunks anyway.
+
+    ``mode`` left unset falls back to ``use_rag``, so a client written for
+    Day 22 keeps the behaviour it had.
     """
     try:
-        answer = await rag_agent.ask(request.question, use_rag=request.use_rag, top_k=request.top_k)
+        settings = rag_agent.settings.with_overrides(
+            retrieval_top_k=request.retrieval_top_k,
+            similarity_threshold=request.similarity_threshold,
+            final_top_k=request.final_top_k,
+            query_rewrite=request.query_rewrite,
+        )
+        answer = await rag_agent.ask(
+            request.question,
+            use_rag=request.use_rag,
+            top_k=request.top_k,
+            mode=request.mode,
+            settings=settings,
+        )
     except VectorIndexError as error:
         # Not an error in the request: nobody has built the index yet.
         raise HTTPException(
             status_code=503,
             detail=f"The document index is not available: {error}",
         ) from error
+    except ValueError as error:
+        # A threshold or a top-k combination that cannot mean anything.
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    scored = {
+        item.chunk.chunk_id: item
+        for item in (answer.enhanced.final if answer.enhanced else ())
+    }
 
     return AgentRagResponse(
         answer=answer.answer,
         rag_enabled=answer.rag_enabled,
+        mode=answer.mode,
         sources=answer.sources,
         retrieved_chunks=[
             AgentRagChunk(
@@ -208,6 +235,15 @@ async def agent_rag(request: AgentRagRequest) -> AgentRagResponse:
                 file=chunk.file,
                 section=chunk.section,
                 score=round(chunk.score, 4),
+                similarity_score=round(scored[chunk.chunk_id].similarity_score, 4)
+                if chunk.chunk_id in scored
+                else 0.0,
+                keyword_score=round(scored[chunk.chunk_id].keyword_score, 4)
+                if chunk.chunk_id in scored
+                else 0.0,
+                rerank_score=round(scored[chunk.chunk_id].rerank_score, 4)
+                if chunk.chunk_id in scored
+                else 0.0,
             )
             for chunk in answer.retrieved_chunks
         ],
@@ -215,6 +251,29 @@ async def agent_rag(request: AgentRagRequest) -> AgentRagResponse:
         embedding_model=answer.embedding_model,
         retrieval_seconds=round(answer.retrieval_seconds, 3),
         llm_seconds=round(answer.llm_seconds, 3),
+        debug=_rag_debug(answer),
+    )
+
+
+def _rag_debug(answer) -> AgentRagDebug | None:
+    """The funnel, for Enhanced RAG only."""
+    found = answer.enhanced
+
+    if found is None:
+        return None
+
+    return AgentRagDebug(
+        original_query=found.query.original,
+        rewritten_query=found.query.query,
+        rewrite_used=found.query.used,
+        retrieval_top_k=found.settings.retrieval_top_k,
+        retrieved_count=len(found.retrieval.chunks),
+        filtered_count=len(found.filtered.kept),
+        final_count=len(found.final),
+        threshold=found.settings.similarity_threshold,
+        reordered=found.reranked.reordered,
+        rewrite_seconds=round(found.query.seconds, 3),
+        rerank_seconds=round(found.reranked.seconds, 3),
     )
 
 

@@ -648,6 +648,70 @@ question -> embedding -> FAISS -> top-K chunks -> context + question -> Gemini -
   The qualitative comparison is left to a person reading both answers, which
   is why both are kept in full.
 
+## Reranking and filtering (Day 23)
+
+Day 22 was one step: embed the question, take the five nearest chunks, ask
+the model. FAISS, though, always returns something - ask for ten and it gives
+ten, even when the index holds nothing on the subject, because the tenth is
+simply the least unlike the question of everything there is. Day 23 puts a
+second stage after the search, so that what reaches the model is what the
+question was actually about.
+
+```
+question
+  -> query rewrite        "Как работает MCP в проекте?" -> "MCP server, registry, routing"
+  -> FAISS                retrieval_top_k = 10
+  -> similarity filter    everything below 0.70 dropped
+  -> reranking            0.7 x similarity + 0.3 x keyword match
+  -> final top-k = 3
+  -> the model            asked the ORIGINAL question, with those three chunks
+```
+
+The rule that matters: **the rewrite is for the search only.** The model is
+always shown the question the person asked. A rewritten query is a guess about
+what to look for, not a restatement of what was wanted, and answering the guess
+is how a RAG system quietly starts answering something else.
+
+- `app/services/query_rewriter.py` - a model call with a narrow brief: turn the
+  question into the words the documents would use, keep the subject, answer
+  with the query and nothing else. A failed or rambling rewrite falls back to a
+  stopword-stripped version of the question rather than stopping the answer,
+  and `rewrite_used` says which of the three it was (`model`, `keywords`,
+  `off`). Switchable per call.
+- `app/services/rag_filter.py` - a similarity threshold, and nothing else. What
+  it drops is kept with its score, so a run can say what it threw away and why.
+- `app/services/reranker.py` - a transparent heuristic, deliberately not a
+  second model: `similarity_weight x similarity + keyword_weight x keyword`,
+  where the keyword half is split between the chunk's body and its own label
+  (file and section) by `section_weight`. Every weight is configurable, every
+  score is printed, and ties break by similarity and then chunk id so the same
+  input always gives the same order. The point of this stage is that a person
+  can read a score and say why a chunk moved.
+- `app/services/rag_enhanced.py` - the funnel itself, with the record of it:
+  what was retrieved, what the threshold dropped (with scores), what the
+  reranker made of the rest, and how long each step took.
+- `app/services/rag_agent.py` - now three modes through one agent: `off`,
+  `baseline` (Day 22) and `enhanced`. The mode decides what happens between the
+  question and the model, and nothing else changes, which is what keeps the
+  three answers comparable.
+- **When the filter keeps nothing, nothing is sent.** The model is not asked at
+  all: the answer is "The information is not available in the indexed
+  documents." Handing it the ten least-unlike chunks instead is exactly how a
+  confident paragraph gets assembled out of nothing.
+- `python -m app.rag --mode enhanced "..."` prints the whole funnel - the
+  rewritten query, every retrieved chunk with the ones below the threshold
+  marked, the counts at each step, and the final three with their
+  `0.7·sim + 0.3·kw` arithmetic spelled out.
+- `python -m app.compare_rag` asks the same ten control questions from Day 22
+  in all three modes and writes `data/rag/day23_results.json`. The metrics
+  count only what can be counted: whether the expected source reached the
+  model, how many chunks each stage kept, and - the number this day exists to
+  move - how many below-threshold chunks each mode sent to the model anyway.
+- `POST /agent/rag` takes `mode`, `retrieval_top_k`, `similarity_threshold`,
+  `final_top_k` and `query_rewrite`, and returns a `debug` block with the
+  funnel for enhanced mode. A request with no `mode` still behaves exactly as
+  it did on Day 22.
+
 ## Layout
 
 ```
@@ -660,6 +724,7 @@ app/core/config.py            environment and constants
 app/index_documents.py        the document indexing pipeline (Day 21)
 app/rag.py                    ask the index a question, with or without RAG (Day 22)
 app/evaluate_rag.py           the ten control questions, both modes (Day 22)
+app/compare_rag.py            the same ten, three modes: off / baseline / enhanced (Day 23)
 data/documents/               the corpus that does not live in this repo (Android sources, PDFs)
 mcp_servers/                  MCP servers, each run as its own subprocess (japanese_learning: Day 16,
                               jlpt_vocab: Days 17-18, japanese_data + processing + storage: Days 19-20)

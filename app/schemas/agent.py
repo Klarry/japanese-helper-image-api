@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -390,23 +390,60 @@ class AgentTaskValidationRequest(BaseModel):
 
 
 class AgentRagRequest(BaseModel):
-    """A question for the document index (Day 22)."""
+    """A question for the document index (Days 22-23)."""
 
     question: str
     #: False asks the same model the same question with no context at all -
     #: the other half of the comparison, through the same agent.
     use_rag: bool = True
     top_k: int = Field(default=5, ge=1, le=20)
+    #: Which pipeline to answer with: "off", "baseline" (Day 22) or
+    #: "enhanced" (Day 23: rewrite, filter, rerank). Left unset, use_rag
+    #: decides, so a client written before Day 23 keeps its behaviour.
+    mode: Literal["off", "baseline", "enhanced"] | None = None
+    #: Enhanced only. Unset means the server's configured value.
+    retrieval_top_k: int | None = Field(default=None, ge=1, le=50)
+    similarity_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    final_top_k: int | None = Field(default=None, ge=1, le=20)
+    query_rewrite: bool | None = None
 
 
 class AgentRagChunk(BaseModel):
     """One chunk the search returned. The text is not sent: the screen shows
-    where an answer came from, not the documents themselves."""
+    where an answer came from, not the documents themselves.
+
+    The three scores are filled in by Enhanced RAG only; in the other modes
+    there is no second stage, so ``score`` is all there is to report.
+    """
 
     chunk_id: str
     file: str
     section: str = ""
     score: float = 0.0
+    similarity_score: float = 0.0
+    keyword_score: float = 0.0
+    rerank_score: float = 0.0
+
+
+class AgentRagDebug(BaseModel):
+    """What the second stage did with this question (Day 23).
+
+    Present only for mode="enhanced". Every count is what actually happened,
+    not what was configured: ``retrieval_top_k`` and ``threshold`` say what
+    was asked for, the three counts say what came of it.
+    """
+
+    original_query: str = ""
+    rewritten_query: str = ""
+    rewrite_used: str = ""
+    retrieval_top_k: int = 0
+    retrieved_count: int = 0
+    filtered_count: int = 0
+    final_count: int = 0
+    threshold: float = 0.0
+    reordered: bool = False
+    rewrite_seconds: float = 0.0
+    rerank_seconds: float = 0.0
 
 
 class AgentRagResponse(BaseModel):
@@ -418,12 +455,16 @@ class AgentRagResponse(BaseModel):
 
     answer: str
     rag_enabled: bool = False
+    mode: str = "baseline"
     sources: list[str] = []
     retrieved_chunks: list[AgentRagChunk] = []
     top_k: int = 0
     embedding_model: str = ""
     retrieval_seconds: float = 0.0
     llm_seconds: float = 0.0
+    #: Enhanced only. None in the other modes, because there was no second
+    #: stage to report - an empty object would read like one that did nothing.
+    debug: AgentRagDebug | None = None
 
 
 class AgentDocumentIndexResponse(BaseModel):
