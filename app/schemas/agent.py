@@ -425,6 +425,31 @@ class AgentRagChunk(BaseModel):
     rerank_score: float = 0.0
 
 
+class AgentRagSource(BaseModel):
+    """One document behind an answer (Day 24). Built on the backend from the
+    chunks a surviving citation points at - never from anything the model
+    wrote - so a source that did not support the answer cannot appear."""
+
+    source: str = "project"
+    file: str = ""
+    section: str = ""
+    chunk_id: str = ""
+
+
+class AgentRagCitation(BaseModel):
+    """One exact fragment of one retrieved chunk (Day 24).
+
+    ``quote`` is verified on the backend to be a character-for-character
+    fragment of the chunk named by ``chunk_id``; a quote that is not is
+    rejected before it reaches here.
+    """
+
+    source: str = ""
+    section: str = ""
+    chunk_id: str = ""
+    quote: str = ""
+
+
 class AgentRagDebug(BaseModel):
     """What the second stage did with this question (Day 23).
 
@@ -444,6 +469,11 @@ class AgentRagDebug(BaseModel):
     reordered: bool = False
     rewrite_seconds: float = 0.0
     rerank_seconds: float = 0.0
+    #: Day 24: how relevant the best surviving chunk was, and the bar it had
+    #: to clear before the model was asked at all.
+    best_relevance: float = 0.0
+    best_similarity: float = 0.0
+    answer_threshold: float = 0.0
 
 
 class AgentRagResponse(BaseModel):
@@ -465,6 +495,19 @@ class AgentRagResponse(BaseModel):
     #: Enhanced only. None in the other modes, because there was no second
     #: stage to report - an empty object would read like one that did nothing.
     debug: AgentRagDebug | None = None
+    #: Day 24, in every mode. "answered", "insufficient_context" (the index
+    #: had nothing relevant enough and the model was not asked) or
+    #: "disabled" (no retrieval ran).
+    rag_status: str = "answered"
+    #: "high", "medium" or "low", derived from the evidence that survived.
+    confidence: str = "low"
+    #: "supported", "unsupported" or "not_checked" - whether the answer's
+    #: claims stand on the quoted evidence.
+    citation_support: str = "not_checked"
+    #: The documents behind the answer, and exact quotes from them. Empty
+    #: when nothing was cited, which is itself the report.
+    cited_sources: list[AgentRagSource] = []
+    citations: list[AgentRagCitation] = []
 
 
 class AgentDocumentIndexResponse(BaseModel):

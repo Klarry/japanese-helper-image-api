@@ -162,3 +162,11 @@ RAG_QUERY_REWRITE_ENABLED = os.getenv("RAG_QUERY_REWRITE_ENABLED", "true").strip
     "yes",
     "on",
 }
+
+# --- Citations and anti-hallucination (Day 24) -----------------------------
+# How relevant the best surviving chunk has to be before the model is asked
+# at all. Separate from RAG_SIMILARITY_THRESHOLD above: that one decides
+# which chunks are worth keeping, this one decides whether what was kept is
+# worth answering from. Below it the answer is "I don't know based on the
+# indexed documents" and there is no model call.
+RAG_ANSWER_THRESHOLD = float(os.getenv("RAG_ANSWER_THRESHOLD", "0.70"))

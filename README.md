@@ -712,6 +712,78 @@ is how a RAG system quietly starts answering something else.
   funnel for enhanced mode. A request with no `mode` still behaves exactly as
   it did on Day 22.
 
+## Citations and anti-hallucination (Day 24)
+
+An answer with a source attached is only worth more than an answer without
+one if the source is real. Day 23 named the files an answer came from; Day 24
+makes every claim traceable to an exact sentence, and refuses to answer at all
+when the evidence is too thin.
+
+```
+retrieval -> filter -> rerank
+  -> relevance gate        best rerank score >= answer_threshold, or no model call
+  -> model                 asked for an answer AND exact quotes, citing by NUMBER
+  -> citation validation   quote must be a character-for-character fragment of
+                           the chunk it cites; anything else is dropped
+  -> support check         do the answer's claims stand on the quotes?
+  -> one response schema
+```
+
+Two things the model is never trusted with:
+
+- **chunk ids.** The prompt numbers the extracts `[1] [2] [3]` and shows their
+  file and section for reading, not for citing. The model cites a number; the
+  backend turns that number back into the chunk. A number that was not in the
+  prompt is not a chunk, so there is nothing to invent.
+- **quotes.** Whatever comes back as a quote has to appear inside the chunk it
+  cites. `quote in chunk.text` is the whole test - whitespace is collapsed on
+  both sides, because a reflowed line break is not an invention, but nothing
+  else is normalised. A citation that fails is dropped, logged with its reason,
+  and kept in the evaluation file rather than quietly discarded.
+
+Every answer, in every mode, comes back in one shape:
+
+```json
+{
+  "answer": "...",
+  "sources":   [{"source": "project", "file": "...", "section": "...", "chunk_id": "..."}],
+  "citations": [{"source": "...", "section": "...", "chunk_id": "...", "quote": "..."}],
+  "confidence": "high | medium | low",
+  "rag_status": "answered | insufficient_context | disabled",
+  "citation_support": "supported | unsupported | not_checked"
+}
+```
+
+- `app/services/rag_citations.py` - parses the reply, resolves the numbers,
+  validates every quote, and builds the sources from the chunks the surviving
+  citations point at. A source the answer did not lean on cannot appear.
+- `app/services/rag_response.py` - the schema above, and the rule confidence is
+  derived by: `low` without citations or with unsupported claims, `high` only
+  when the evidence clears the bar with room to spare and the support check
+  agrees, `medium` in between.
+- `app/services/claim_support.py` - the second, smaller question: a valid
+  citation proves the quote is real, not that the answer follows from it. A
+  short model call compares the answer's claims against the quotes alone; with
+  no model it falls back to a lexical check, and the result always says which
+  of the two ran.
+- **`RAG_ANSWER_THRESHOLD`** (0.70) - how relevant the best surviving chunk has
+  to be before the model is asked at all. Separate from the similarity filter:
+  that one decides which chunks are worth keeping, this one decides whether what
+  was kept is worth answering from. Below it the reply is "I don't know based on
+  the indexed documents. Please clarify your question or provide more context."
+  and **no model call is made** - zero tokens.
+- `RAG_OFF` answers with `rag_status: "disabled"` and empty evidence;
+  `RAG_BASELINE` names the documents it was given but quotes nothing, so its
+  confidence is never better than `low`. That gap is the point of the day.
+- `python -m app.evaluate_citations` runs the ten control questions and checks
+  nine things per question, writing `data/rag/day24_results.json` (every answer
+  with its evidence and everything rejected) and `data/rag/day24_comparison.json`
+  (the counts). The summary only tallies what the per-question checks decided,
+  so the two files cannot disagree.
+- The log reads as the funnel: `[Retrieval]`, `[Filtering]`, `[Reranking]`,
+  `[Relevance]`, `[Citations]`, `[Support]` - and, for a refused question,
+  `[Agent] Answering skipped · Reason: insufficient context`.
+
 ## Layout
 
 ```
@@ -725,6 +797,7 @@ app/index_documents.py        the document indexing pipeline (Day 21)
 app/rag.py                    ask the index a question, with or without RAG (Day 22)
 app/evaluate_rag.py           the ten control questions, both modes (Day 22)
 app/compare_rag.py            the same ten, three modes: off / baseline / enhanced (Day 23)
+app/evaluate_citations.py     the same ten, checked for sources, quotes and support (Day 24)
 data/documents/               the corpus that does not live in this repo (Android sources, PDFs)
 mcp_servers/                  MCP servers, each run as its own subprocess (japanese_learning: Day 16,
                               jlpt_vocab: Days 17-18, japanese_data + processing + storage: Days 19-20)

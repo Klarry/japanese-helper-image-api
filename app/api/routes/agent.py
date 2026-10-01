@@ -17,7 +17,9 @@ from app.schemas.agent import (
     AgentLongTermMemoryRequest,
     AgentMemoryResponse,
     AgentRagChunk,
+    AgentRagCitation,
     AgentRagDebug,
+    AgentRagSource,
     AgentRagRequest,
     AgentRagResponse,
     AgentShortTermMemoryRequest,
@@ -252,6 +254,17 @@ async def agent_rag(request: AgentRagRequest) -> AgentRagResponse:
         retrieval_seconds=round(answer.retrieval_seconds, 3),
         llm_seconds=round(answer.llm_seconds, 3),
         debug=_rag_debug(answer),
+        rag_status=answer.cited.rag_status if answer.cited else "answered",
+        confidence=answer.cited.confidence if answer.cited else "low",
+        citation_support=answer.cited.citation_support if answer.cited else "not_checked",
+        cited_sources=[
+            AgentRagSource(**source.as_dict())
+            for source in (answer.cited.sources if answer.cited else ())
+        ],
+        citations=[
+            AgentRagCitation(**citation.as_dict())
+            for citation in (answer.cited.citations if answer.cited else ())
+        ],
     )
 
 
@@ -274,6 +287,9 @@ def _rag_debug(answer) -> AgentRagDebug | None:
         reordered=found.reranked.reordered,
         rewrite_seconds=round(found.query.seconds, 3),
         rerank_seconds=round(found.reranked.seconds, 3),
+        best_relevance=round(found.best_relevance, 4),
+        best_similarity=round(found.best_similarity, 4),
+        answer_threshold=found.settings.answer_threshold,
     )
 
 

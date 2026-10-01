@@ -13,3 +13,5 @@ data/*
 # ...but the results of an evaluation run are output, not source.
 data/rag/evaluation_results.json
 data/rag/day23_results.json
+data/rag/day24_results.json
+data/rag/day24_comparison.json

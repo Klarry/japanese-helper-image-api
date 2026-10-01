@@ -40,6 +40,12 @@ QUERY_REWRITE_ENABLED = os.getenv("RAG_QUERY_REWRITE_ENABLED", "true").strip().l
     "yes",
     "on",
 }
+# Day 24. How relevant the best surviving chunk has to be before the model
+# is asked at all. Below it the answer is "I don't know based on the indexed
+# documents" and no model call is made - a separate decision from the filter
+# above, which decides which chunks are worth keeping; this one decides
+# whether what was kept is worth answering from.
+ANSWER_THRESHOLD = float(os.getenv("RAG_ANSWER_THRESHOLD", "0.70"))
 
 
 @dataclass(frozen=True)
@@ -53,6 +59,7 @@ class RagSettings:
     keyword_weight: float = KEYWORD_WEIGHT
     section_weight: float = SECTION_WEIGHT
     query_rewrite: bool = QUERY_REWRITE_ENABLED
+    answer_threshold: float = ANSWER_THRESHOLD
 
     def __post_init__(self) -> None:
         if self.retrieval_top_k < 1:
@@ -69,6 +76,9 @@ class RagSettings:
 
         if not 0.0 <= self.similarity_threshold <= 1.0:
             raise ValueError("similarity_threshold is a cosine similarity, between 0 and 1")
+
+        if not 0.0 <= self.answer_threshold <= 1.0:
+            raise ValueError("answer_threshold is a relevance score, between 0 and 1")
 
         if not 0.0 <= self.section_weight <= 1.0:
             raise ValueError("section_weight is a share of the keyword half, between 0 and 1")
@@ -95,6 +105,7 @@ class RagSettings:
             "keyword_weight": self.keyword_weight,
             "section_weight": self.section_weight,
             "query_rewrite": self.query_rewrite,
+            "answer_threshold": self.answer_threshold,
         }
 
 

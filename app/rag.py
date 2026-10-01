@@ -56,8 +56,15 @@ def show_enhanced(answer) -> None:
         )
         print(f"     matched: {', '.join(item.matched) or '-'}")
 
+    print(
+        f"\n[Relevance]\n  Best score: {found.best_relevance:.3f}"
+        f"  (best similarity {found.best_similarity:.3f})"
+        f"\n  Threshold: {settings.answer_threshold}"
+        f"\n  Status: {answer.cited.rag_status if answer.cited else '-'}"
+    )
+
     if found.nothing_relevant:
-        print("\n  Nothing cleared the threshold - the model was not asked.")
+        print("  Nothing cleared the similarity filter - the model was not asked.")
 
 
 def show(answer) -> None:
@@ -75,17 +82,54 @@ def show(answer) -> None:
     else:
         print("Retrieval: off")
 
-    if answer.sources:
-        print("\nSources:")
-
-        for source in answer.sources:
-            print(f"  - {source}")
-
     print(f"\nAnswer:\n{answer.answer}\n")
+    show_evidence(answer)
     print(
         f"[retrieval {answer.retrieval_seconds:.3f}s · model {answer.llm_seconds:.3f}s · "
         f"{answer.tokens_used} tokens]"
     )
+
+
+def show_evidence(answer) -> None:
+    """Sources and citations, in the order the assignment asks to see them.
+
+    "None" rather than an empty heading, because a weak-context answer has
+    to look different from an answer whose evidence was simply not printed.
+    """
+    cited = answer.cited
+
+    if cited is None:
+        return
+
+    print("Sources:")
+
+    if cited.sources:
+        for number, source in enumerate(cited.sources, start=1):
+            print(f"  {number}. {source.file} / {source.section or '-'} / {source.chunk_id}")
+    else:
+        print("  None")
+
+    print("\nCitations:")
+
+    if cited.citations:
+        for citation in cited.citations:
+            print(f"  > \"{citation.quote}\"")
+            print(f"    - {citation.source} / {citation.section or '-'} / {citation.chunk_id}")
+    else:
+        print("  None")
+
+    if cited.rejected_citations:
+        print("\nRejected citations:")
+
+        for item in cited.rejected_citations:
+            print(f"  x {item.reason}: {item.quote[:70]}…")
+
+    print(f"\nConfidence: {cited.confidence} · Status: {cited.rag_status}", end="")
+
+    if cited.citation_support != "not_checked":
+        print(f" · Citation support: {cited.citation_support} ({cited.support_checked_by})", end="")
+
+    print("\n")
 
 
 def settings_from(options: argparse.Namespace):
@@ -95,6 +139,7 @@ def settings_from(options: argparse.Namespace):
         similarity_threshold=options.threshold,
         final_top_k=options.final_top_k,
         query_rewrite=False if options.no_rewrite else None,
+        answer_threshold=options.answer_threshold,
     )
 
 
@@ -133,6 +178,12 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--threshold", type=float, default=None, help="enhanced: similarity cut-off")
     parser.add_argument("--final-top-k", type=int, default=None, help="enhanced: after reranking")
     parser.add_argument("--no-rewrite", action="store_true", help="enhanced: search with the question as asked")
+    parser.add_argument(
+        "--answer-threshold",
+        type=float,
+        default=None,
+        help="enhanced: how relevant the best chunk must be before the model is asked at all",
+    )
     parser.add_argument("--strategy", choices=(STRUCTURAL, FIXED), default=DEFAULT_STRATEGY)
     options = parser.parse_args(argv)
 

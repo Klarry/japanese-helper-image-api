@@ -30,7 +30,8 @@ from app.services.query_rewriter import FALLBACK, MODEL, NONE, QueryRewriter, ke
 from app.services.rag_agent import BASELINE, ENHANCED, OFF, RagAgent, mode_of
 from app.services.rag_enhanced import EnhancedRetriever
 from app.services.rag_filter import RelevanceFilter
-from app.services.rag_prompt import NO_CONTEXT_ANSWER, UNAVAILABLE
+from app.services.rag_prompt import DONT_KNOW
+from app.services.rag_response import INSUFFICIENT_ANSWER
 from app.services.rag_retriever import RAGRetriever, RetrievedChunk
 from app.services.rag_settings import RagSettings
 from app.services.reranker import Reranker, overlap, terms
@@ -147,7 +148,15 @@ SCHEDULER_QUESTION = "How often does the digest scheduler tick, and what is the 
 def settings(**changes) -> RagSettings:
     """Test settings: the rewrite off unless a test turns it on, so nothing
     reaches for a model that is not there by accident."""
-    base = {"retrieval_top_k": 8, "similarity_threshold": 0.3, "final_top_k": 3, "query_rewrite": False}
+    base = {
+        "retrieval_top_k": 8,
+        "similarity_threshold": 0.3,
+        "final_top_k": 3,
+        "query_rewrite": False,
+        # Day 24 added a second gate after this one. These tests are about
+        # the funnel, so it is opened here and tested on its own elsewhere.
+        "answer_threshold": 0.0,
+    }
     base.update(changes)
 
     return RagSettings(**base)
@@ -442,7 +451,7 @@ def test_no_more_than_final_top_k_chunks_reach_the_model(monkeypatch, retriever)
     assert answer.enhanced.filtered.kept  # there was more to choose from
     assert len(answer.enhanced.filtered.kept) > 3
     assert len(answer.retrieved_chunks) == 3
-    assert prompts[0].count("[Source:") == 3
+    assert prompts[0].count("] file: ") == 3
 
 
 @pytest.mark.parametrize("final_top_k", [1, 2, 4])
@@ -472,8 +481,8 @@ def test_a_question_the_index_cannot_answer_sends_nothing_to_the_model(monkeypat
     answer = asyncio.run(agent.ask("Which relational database stores the conversations?", mode=ENHANCED))
 
     assert prompts == []
-    assert answer.answer == NO_CONTEXT_ANSWER
-    assert UNAVAILABLE in answer.answer
+    assert answer.answer == INSUFFICIENT_ANSWER
+    assert DONT_KNOW in answer.answer
     assert answer.retrieved_chunks == []
     assert answer.sources == []
 
@@ -648,7 +657,7 @@ def test_the_prompt_names_the_files_the_answer_may_cite(monkeypatch, retriever):
     answer = asyncio.run(agent.ask(SCHEDULER_QUESTION, mode=ENHANCED))
 
     for item in answer.enhanced.final:
-        assert f"[Source: {item.chunk.file}]" in prompts[0]
+        assert f"file: {item.chunk.file}" in prompts[0]
 
 
 # --- 12. the comparison ----------------------------------------------------
@@ -856,7 +865,7 @@ def test_the_endpoint_says_it_does_not_know_rather_than_guessing(monkeypatch, in
         },
     ).json()
 
-    assert body["answer"] == NO_CONTEXT_ANSWER
+    assert body["answer"] == INSUFFICIENT_ANSWER
     assert body["retrieved_chunks"] == []
     assert body["sources"] == []
     assert body["debug"]["filtered_count"] == 0

@@ -77,3 +77,67 @@ def plain_prompt(question: str) -> str:
     """The same question with no context at all - the other half of the
     comparison."""
     return f"Question:\n{question}\n\nInstructions:\n{_WITHOUT_CONTEXT}"
+
+# --- Day 24: the prompt that asks for citations ----------------------------
+
+#: What the model is told to answer when the context does not carry the
+#: answer. The same sentence the backend returns on its behalf when the
+#: model is not asked at all, so a client sees one phrasing either way.
+DONT_KNOW = (
+    "I don't know based on the indexed documents. "
+    "Please clarify your question or provide more context."
+)
+
+_CITED_RULES = (
+    "Rules:\n"
+    "- Answer ONLY using the numbered extracts above. Do not add facts from general knowledge, "
+    "however plausible they look.\n"
+    "- Every factual claim in your answer must be supported by one of the extracts.\n"
+    "- Cite by NUMBER only. Never write a file name, a chunk id or a number that is not above.\n"
+    "- Each quote must be copied EXACTLY from the extract you cite - same words, same order, "
+    "one to three short sentences. Do not paraphrase a quote, do not join two places into one.\n"
+    "- If the extracts do not contain enough to answer, do not guess. Answer exactly: "
+    f'"{DONT_KNOW}"\n'
+    "- Answer in the language of the question.\n\n"
+    "Reply with one JSON object and nothing else:\n"
+    "{\n"
+    '  "answer": "your answer, in prose",\n'
+    '  "citations": [{"source": 1, "quote": "exact words from extract 1"}]\n'
+    "}"
+)
+
+
+def numbered_context(chunks: Sequence[RetrievedChunk]) -> str:
+    """The extracts, numbered, each labelled with where it came from.
+
+    The number is the only handle the model is given. Its file and section
+    are shown so the model can reason about what it is reading, but they are
+    never what it cites - the backend turns the number back into the chunk,
+    so there is nothing for the model to get wrong.
+    """
+    return "\n\n".join(
+        f"[{number}] file: {chunk.file} | section: {chunk.section or '-'} | relevance: {chunk.score:.3f}\n"
+        f"{chunk.text}"
+        for number, chunk in enumerate(chunks, start=1)
+    )
+
+
+def cited_prompt(question: str, chunks: Sequence[RetrievedChunk]) -> str:
+    """Question, numbered context, rules - and a shape for the reply.
+
+    The question comes first so it is read before the extracts, and the
+    rules come last so they are the final thing before answering.
+    """
+    if not chunks:
+        return (
+            f"Question:\n{question}\n\n"
+            "Extracts:\n(nothing was found in the indexed documents)\n\n"
+            f'Instructions:\nAnswer exactly: "{DONT_KNOW}"'
+        )
+
+    return (
+        f"Question:\n{question}\n\n"
+        f"Extracts from the project's own documents:\n\n{numbered_context(chunks)}\n\n"
+        f"Instructions:\n{_SHARED}\n\n{_CITED_RULES}"
+    )
+

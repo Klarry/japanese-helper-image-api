@@ -64,6 +64,25 @@ class EnhancedRetrieval:
         """The index was searched and had nothing about this question."""
         return not self.final
 
+    @property
+    def best_relevance(self) -> float:
+        """How relevant the best surviving chunk is, after reranking.
+
+        The rerank score rather than the raw similarity, because this is the
+        number the second stage actually produced - and because a chunk that
+        is close in vector space but uses none of the question's words is
+        exactly the one an answer should not be built on. Both numbers are
+        reported, so a decision taken on this one can always be checked
+        against the other.
+        """
+        return max((item.rerank_score for item in self.final), default=0.0)
+
+    @property
+    def best_similarity(self) -> float:
+        """The best raw cosine similarity of everything retrieved, before
+        anything was thrown away."""
+        return max((chunk.score for chunk in self.retrieval.chunks), default=0.0)
+
     def as_dict(self, with_text: bool = False) -> dict:
         """What the assignment asks Enhanced RAG to report."""
         return {
@@ -90,6 +109,9 @@ class EnhancedRetrieval:
                 for chunk in self.filtered.dropped
             ],
             "reordered": self.reranked.reordered,
+            "best_relevance": round(self.best_relevance, 4),
+            "best_similarity": round(self.best_similarity, 4),
+            "answer_threshold": self.settings.answer_threshold,
             "latency": {
                 "rewrite_seconds": round(self.query.seconds, 3),
                 "retrieval_seconds": round(self.retrieval.seconds, 3),
@@ -154,14 +176,15 @@ class EnhancedRetriever:
         final = reranked.top(active.final_top_k) if filtered.kept else ()
         seconds = time.perf_counter() - started
 
+        # Day 24: the funnel, one labelled line per stage, so a run can be
+        # read off the log without opening anything.
+        logger.info("[Retrieval] Retrieved: %d", len(retrieval.chunks))
         logger.info(
-            "Enhanced retrieval: %d retrieved -> %d above %.2f -> %d kept%s",
-            len(retrieval.chunks),
-            len(filtered.kept),
+            "[Filtering] Threshold: %.2f · Remaining: %d",
             active.similarity_threshold,
-            len(final),
-            "" if final else " (nothing relevant - the model will be told so)",
+            len(filtered.kept),
         )
+        logger.info("[Reranking] Final top-K: %d", len(final))
 
         return EnhancedRetrieval(
             query=rewritten,
