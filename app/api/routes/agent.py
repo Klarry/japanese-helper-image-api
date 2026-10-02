@@ -16,10 +16,13 @@ from app.schemas.agent import (
     AgentInvariantsResponse,
     AgentLongTermMemoryRequest,
     AgentMemoryResponse,
+    AgentMiniChatRequest,
+    AgentMiniChatResponse,
     AgentRagChunk,
     AgentRagCitation,
     AgentRagDebug,
     AgentRagSource,
+    AgentTaskMemory,
     AgentRagRequest,
     AgentRagResponse,
     AgentShortTermMemoryRequest,
@@ -36,6 +39,7 @@ from app.schemas.agent import (
     MemoryLayer,
 )
 from app.services.document_index import read_summary
+from app.services.chat_session import ChatSession
 from app.services.rag_agent import RagAgent
 from app.services.vector_index import VectorIndexError
 from app.services.japanese_learning_agent import agent
@@ -44,6 +48,19 @@ router = APIRouter()
 # One agent for both modes, built once: its retriever loads the index lazily,
 # so importing this module costs nothing when nobody asks a question.
 rag_agent = RagAgent()
+
+
+def chat_session() -> ChatSession:
+    """A session for one request (Day 25).
+
+    Built per request rather than held as a module-level object, and that is
+    the whole design: the conversation lives in a file, not in this process.
+    A session constructed here reads it fresh, so the chat sees the turns the
+    learning agent wrote on the same branch, and a second worker answering
+    the next message sees this one. The retriever is shared, because it is
+    the thing with a loaded index in it.
+    """
+    return ChatSession(retriever=rag_agent.retriever, settings=rag_agent.settings)
 
 
 @router.post("/agent/chat")
@@ -290,6 +307,53 @@ def _rag_debug(answer) -> AgentRagDebug | None:
         best_relevance=round(found.best_relevance, 4),
         best_similarity=round(found.best_similarity, 4),
         answer_threshold=found.settings.answer_threshold,
+    )
+
+
+@router.post("/agent/mini-chat")
+async def agent_mini_chat(request: AgentMiniChatRequest) -> AgentMiniChatResponse:
+    """One turn of the mini chat (Day 25).
+
+    The same conversation the rest of the agent uses, answered the long way:
+    what the message settled goes into the task's memory, the question goes
+    through retrieval whatever it looks like, and the answer comes back with
+    the documents it was built on. Both turns are on disk before this
+    returns, so the next request - or a restart - picks up where this left.
+
+    The device sends a message and nothing else. It holds no history, no task
+    memory and no part of retrieval, and could not contradict them if it did.
+    """
+    try:
+        turn = await chat_session().ask(request.message)
+    except VectorIndexError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=f"The document index is not available: {error}",
+        ) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    cited = turn.answer
+    memory = turn.memory
+    found = turn.retrieval
+
+    return AgentMiniChatResponse(
+        answer=cited.answer,
+        rag_status=cited.rag_status,
+        confidence=cited.confidence,
+        sources=[AgentRagSource(**source.as_dict()) for source in cited.sources],
+        citations=[AgentRagCitation(**citation.as_dict()) for citation in cited.citations],
+        task_memory=AgentTaskMemory(
+            **(memory.after.as_dict() if memory else AgentTaskMemory().model_dump())
+        ),
+        memory_changes=memory.changes if memory else [],
+        retrieved_count=len(found.retrieval.chunks) if found else 0,
+        filtered_count=len(found.filtered.kept) if found else 0,
+        final_count=len(found.final) if found else 0,
+        best_relevance=round(cited.best_relevance, 4),
+        answer_threshold=cited.answer_threshold,
+        history_length=turn.history_length,
+        seconds=round(turn.seconds, 3),
     )
 
 

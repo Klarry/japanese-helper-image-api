@@ -619,3 +619,94 @@ def test_the_closing_questions_are_about_the_task_not_the_documents():
     assert "goal" in FINAL_QUESTIONS[0].lower()
     assert "constraints" in FINAL_QUESTIONS[1].lower()
     assert "decisions" in FINAL_QUESTIONS[1].lower()
+
+
+# --- the endpoint the app talks to ------------------------------------------
+
+
+def chat_route(monkeypatch, tmp_path, index_dir, text: str, config=None):
+    """The real route, over the small test index, with only Gemini stubbed."""
+    from fastapi.testclient import TestClient
+
+    from app.api.routes import agent as route_module
+    from app.main import app
+    from app.services import chat_session as session_module
+
+    async def fake(prompt, model=None, temperature=None):
+        return GeneratedText(text=text, input_tokens=100, output_tokens=20)
+
+    monkeypatch.setattr(session_module, "generate_text_with_usage", fake)
+    active = config or settings()
+    retriever = RAGRetriever(strategy=STRUCTURAL, index_dir=index_dir)
+    storage = AgentHistoryStorage(str(tmp_path / "chat_history.json"))
+
+    def build() -> ChatSession:
+        return ChatSession(
+            storage=storage,
+            retriever=retriever,
+            settings=active,
+            enhanced=EnhancedRetriever(retriever=retriever, settings=active),
+            router=FakeRouter(
+                [WorkingMemory(goals=["ship the feature"], constraints=["N4"], terms=["学習"])]
+            ),
+        )
+
+    monkeypatch.setattr(route_module, "chat_session", build)
+
+    return TestClient(app)
+
+
+def test_the_endpoint_answers_with_sources_and_the_task_memory(monkeypatch, tmp_path, index_dir):
+    client = chat_route(
+        monkeypatch,
+        tmp_path,
+        index_dir,
+        reply("Only that server's tools go away.", [{"source": 1, "quote": QUOTE}]),
+    )
+
+    body = client.post("/agent/mini-chat", json={"message": QUESTION}).json()
+
+    assert body["rag_status"] == ANSWERED
+    assert body["sources"][0]["chunk_id"]
+    assert body["citations"][0]["quote"] == QUOTE
+    assert body["task_memory"]["goal"] == "ship the feature"
+    assert body["task_memory"]["constraints"] == ["N4"]
+    assert body["task_memory"]["confirmed_terms"] == ["学習"]
+    assert body["retrieved_count"] >= body["filtered_count"] >= body["final_count"]
+    assert body["history_length"] == 2
+
+
+def test_the_endpoint_keeps_the_conversation_between_requests(monkeypatch, tmp_path, index_dir):
+    client = chat_route(monkeypatch, tmp_path, index_dir, reply("An answer."))
+
+    first = client.post("/agent/mini-chat", json={"message": "Our task is to ship it."}).json()
+    second = client.post("/agent/mini-chat", json={"message": QUESTION}).json()
+
+    assert first["history_length"] == 2
+    assert second["history_length"] == 4, "the second request sees the first"
+    assert second["task_memory"]["goal"] == "ship the feature"
+
+
+def test_the_endpoint_reports_no_sources_rather_than_hiding_them(monkeypatch, tmp_path, index_dir):
+    client = chat_route(
+        monkeypatch, tmp_path, index_dir, reply("From the task memory."), config=settings(answer_threshold=0.99)
+    )
+
+    body = client.post("/agent/mini-chat", json={"message": "What is our current goal?"}).json()
+
+    assert body["rag_status"] == INSUFFICIENT
+    assert body["sources"] == []
+    assert body["citations"] == []
+    assert body["retrieved_count"] > 0, "retrieval still ran"
+
+
+def test_an_empty_message_is_refused_at_the_edge(monkeypatch, tmp_path, index_dir):
+    client = chat_route(monkeypatch, tmp_path, index_dir, reply("An answer."))
+
+    assert client.post("/agent/mini-chat", json={"message": "   "}).status_code == 422
+
+
+def test_the_device_cannot_set_what_belongs_to_the_backend():
+    from app.schemas.agent import AgentMiniChatRequest
+
+    assert set(AgentMiniChatRequest.model_fields) == {"message"}

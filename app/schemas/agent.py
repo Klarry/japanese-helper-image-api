@@ -408,6 +408,55 @@ class AgentRagRequest(BaseModel):
     query_rewrite: bool | None = None
 
 
+class AgentTaskMemory(BaseModel):
+    """What the conversation has settled (Day 25).
+
+    A view the backend builds over its working memory and its task state;
+    the device holds none of it and decides none of it. ``goal`` is what the
+    conversation was started for and does not move when the talk wanders.
+    """
+
+    goal: str = ""
+    confirmed_terms: list[str] = []
+    constraints: list[str] = []
+    decisions: list[str] = []
+    requirements: list[str] = []
+    current_state: str = "idle"
+
+
+class AgentMiniChatRequest(BaseModel):
+    """One turn of the mini chat (Day 25).
+
+    Only the message. Everything else - the history, the task memory, which
+    documents to retrieve and how many - belongs to the backend, because a
+    client that could set them could also contradict them.
+    """
+
+    message: str
+
+
+class AgentMiniChatResponse(BaseModel):
+    """The answer, its evidence, and the state of the conversation it is part of."""
+
+    answer: str
+    rag_status: str = "answered"
+    confidence: str = "low"
+    sources: list["AgentRagSource"] = []
+    citations: list["AgentRagCitation"] = []
+    #: What this conversation has settled so far, after this message.
+    task_memory: AgentTaskMemory = AgentTaskMemory()
+    #: What the last message changed in it, in words. Empty when nothing did.
+    memory_changes: list[str] = []
+    #: The retrieval funnel for this question, and how much history there is.
+    retrieved_count: int = 0
+    filtered_count: int = 0
+    final_count: int = 0
+    best_relevance: float = 0.0
+    answer_threshold: float = 0.0
+    history_length: int = 0
+    seconds: float = 0.0
+
+
 class AgentRagChunk(BaseModel):
     """One chunk the search returned. The text is not sent: the screen shows
     where an answer came from, not the documents themselves.
