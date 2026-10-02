@@ -10,8 +10,10 @@ __pycache__/
 data/*
 !data/documents/
 !data/rag/
+!data/chat/
 # ...but the results of an evaluation run are output, not source.
 data/rag/evaluation_results.json
 data/rag/day23_results.json
 data/rag/day24_results.json
 data/rag/day24_comparison.json
+data/chat/day25_results.json

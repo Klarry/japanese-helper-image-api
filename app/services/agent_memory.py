@@ -98,9 +98,17 @@ class WorkingMemory:
     requirements: list[str] = field(default_factory=list)
     constraints: list[str] = field(default_factory=list)
     decisions: list[str] = field(default_factory=list)
+    #: Day 25. The words this task has agreed on - a JLPT level, a kanji, a
+    #: component's name. Separate from the four above because a term is not
+    #: a thing to do: it is how the task says a thing, and an answer that
+    #: renames it halfway through has lost the thread even when every
+    #: constraint still holds.
+    terms: list[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
-        return not (self.goals or self.requirements or self.constraints or self.decisions)
+        return not (
+            self.goals or self.requirements or self.constraints or self.decisions or self.terms
+        )
 
     def as_section(self) -> str:
         lines = (
@@ -108,6 +116,7 @@ class WorkingMemory:
             + _bullets("Requirement", self.requirements)
             + _bullets("Constraint", self.constraints)
             + _bullets("Decision", self.decisions)
+            + _bullets("Confirmed term", self.terms)
         )
 
         return (
@@ -173,6 +182,7 @@ def working_memory_from_json(value: Any) -> WorkingMemory:
         requirements=_as_entries(value.get("requirements")),
         constraints=_as_entries(value.get("constraints")),
         decisions=_as_entries(value.get("decisions")),
+        terms=_as_entries(value.get("terms")),
     )
 
 
@@ -182,6 +192,7 @@ def working_memory_as_json(memory: WorkingMemory) -> dict[str, Any]:
         "requirements": memory.requirements,
         "constraints": memory.constraints,
         "decisions": memory.decisions,
+        "terms": memory.terms,
     }
 
 

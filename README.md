@@ -784,6 +784,64 @@ Every answer, in every mode, comes back in one shape:
   `[Relevance]`, `[Citations]`, `[Support]` - and, for a refused question,
   `[Agent] Answering skipped · Reason: insufficient context`.
 
+## Mini chat with RAG and task memory (Day 25)
+
+Nothing new was built for this day. The conversation is stored by the Day 7
+history storage, in the same file and the same branch the agent uses; the
+task's memory is the Day 11 working memory and the Day 13 task state, read
+through one view; retrieval is the Day 23 second stage; the citations are
+checked by the Day 24 validator. What Day 25 adds is the order they run in.
+
+```
+python -m app.chat                  # the chat
+python -m app.chat --debug          # with the machinery shown
+python -m app.chat --new            # end the conversation and its task memory
+python -m app.evaluate_chat         # the two long scenarios, checked
+```
+
+Two rules make a chat out of the pieces:
+
+- **Retrieval happens on every question**, not when the question looks like a
+  documentation question. A chat where the model decides when to look things
+  up is a chat where "what did we decide about the API?" quietly becomes a
+  guess - and a question that finds nothing still reports that it found
+  nothing, which is information.
+- **Task memory is updated from the message, never from the answer.** The
+  memory router reads what the person said and returns the layers it changed.
+  An assistant that could write its own constraints into the task's memory
+  would be free to agree with itself later, so it cannot.
+
+- `app/services/chat_memory.py` - `TaskMemory`, a *view* over working memory
+  and task state: goal, confirmed terms, constraints, decisions, requirements,
+  current state. A view rather than a third store, because a second copy would
+  need keeping in step with the first, and a memory that can disagree with
+  itself is worse than none. `WorkingMemory` gained one field for this day,
+  `terms`, and the memory router now extracts them.
+- `app/services/chat_prompt.py` - the context, in the order the day asks for
+  it: task memory, recent conversation, retrieved documents, the question, the
+  rules. The one judgement here is about where an answer may come from: facts
+  about the project need a quoted document, what the conversation settled needs
+  the memory block, and the model is told it may not use one in place of the
+  other. That is why "what is our goal?" is answered while "which database do
+  we use?" is still refused.
+- `app/services/chat_session.py` - the turn: remember, retrieve, compose,
+  answer, validate, record. Only the newest messages are sent (the Day 8
+  sliding window); the whole history stays on disk, because the task memory
+  already carries what mattered from earlier.
+- Each message is stored with its timestamp, and each answer with the sources
+  it was built on - `HistoryMessage` gained two optional keys, so every feature
+  written before this day reads and writes the file exactly as it did.
+- `/debug` shows the task memory and what the last message changed in it, the
+  retrieval funnel with the best relevance, and how much history was sent
+  against how much is stored. The plain mode shows the answer and its sources
+  and nothing else.
+- `data/chat/day25_scenarios.json` - two conversations of thirteen and
+  fourteen messages that settle a goal, pin constraints and terms, wander into
+  the project's documents, change a constraint, and come back to ask what was
+  decided. `python -m app.evaluate_chat` runs them, restarts the session before
+  the closing questions, and writes `data/chat/day25_results.json` with eight
+  checks per scenario.
+
 ## Layout
 
 ```
@@ -798,6 +856,8 @@ app/rag.py                    ask the index a question, with or without RAG (Day
 app/evaluate_rag.py           the ten control questions, both modes (Day 22)
 app/compare_rag.py            the same ten, three modes: off / baseline / enhanced (Day 23)
 app/evaluate_citations.py     the same ten, checked for sources, quotes and support (Day 24)
+app/chat.py                   the mini chat: history, task memory, RAG per question (Day 25)
+app/evaluate_chat.py          the two long scenarios, run and checked (Day 25)
 data/documents/               the corpus that does not live in this repo (Android sources, PDFs)
 mcp_servers/                  MCP servers, each run as its own subprocess (japanese_learning: Day 16,
                               jlpt_vocab: Days 17-18, japanese_data + processing + storage: Days 19-20)

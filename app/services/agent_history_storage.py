@@ -49,9 +49,24 @@ logger = logging.getLogger(__name__)
 MAIN_BRANCH = "main"
 
 
-class HistoryMessage(TypedDict):
+class _Turn(TypedDict):
     role: str
     content: str
+
+
+class HistoryMessage(_Turn, total=False):
+    """One message, as everything from Day 7 onwards has stored it.
+
+    ``role`` and ``content`` are what the strategies, the summariser and the
+    transcript have always read, and they stay required. Day 25 adds two
+    optional keys for the chat: when it was said, and - for an assistant
+    turn - the sources the answer was built on. They are optional on purpose:
+    a message written by any earlier feature has neither, and nothing may
+    start depending on them being there.
+    """
+
+    timestamp: str
+    sources: list[dict[str, str]]
 
 
 @dataclass

@@ -1,0 +1,52 @@
+{
+  "about": "Two long conversations for the mini chat (Day 25). Every question is real: the document questions are answerable from this project's own indexed files, and the task questions are answerable only from what the conversation itself settled. Nothing is scripted on the assistant's side - the expectations below are what a run is checked against, not what it is told to say.",
+  "scenarios": [
+    {
+      "id": 1,
+      "name": "Japanese learning feature",
+      "goal_contains": ["feature"],
+      "expected_constraints": ["N4", "Russian"],
+      "expected_terms": ["学習"],
+      "expected_decisions": ["JLPT"],
+      "messages": [
+        {"text": "Давай спроектируем новую функцию для изучения японского в этом приложении. Это наша задача на сегодня.", "expect": "goal"},
+        {"text": "Для текущей задачи ограничение: уровень N4.", "expect": "constraint"},
+        {"text": "Ещё одно ограничение для задачи: объяснения должны быть на русском.", "expect": "constraint"},
+        {"text": "Зафиксируй термин 学習 - так мы называем основное слово этой функции.", "expect": "term"},
+        {"text": "Решение для задачи: берём существующий JLPT vocabulary API, новый писать не будем.", "expect": "decision"},
+        {"text": "Какие MCP-серверы уже зарегистрированы в проекте и что каждый из них предлагает?", "expect": "documents"},
+        {"text": "А что именно save_to_file записывает в JSON-файл, который создаёт?", "expect": "documents"},
+        {"text": "Требование для задачи: экран должен быть минимальным, без лишних элементов.", "expect": "requirement"},
+        {"text": "Поменяй ограничение: не N4, а N5.", "expect": "constraint"},
+        {"text": "Как собирается chunk_id и как он выглядит для файла в подкаталоге?", "expect": "documents"},
+        {"text": "Вернёмся к нашей функции. Какой у нас сейчас goal?", "expect": "memory"},
+        {"text": "Какие ограничения и решения мы зафиксировали?", "expect": "memory"},
+        {"text": "Подведи итог: что мы спроектировали и на каких условиях?", "expect": "memory"}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "MCP and RAG architecture",
+      "goal_contains": ["MCP", "RAG", "retrieval", "поиск"],
+      "expected_constraints": ["FAISS"],
+      "expected_terms": ["structural"],
+      "expected_decisions": ["rerank"],
+      "messages": [
+        {"text": "Наша задача: разобраться в архитектуре MCP и RAG в этом проекте и описать её.", "expect": "goal"},
+        {"text": "Ограничение для задачи: остаёмся на FAISS, новую векторную базу не вводим.", "expect": "constraint"},
+        {"text": "Зафиксируй термин structural - так мы называем стратегию нарезки, с которой работаем.", "expect": "term"},
+        {"text": "Что происходит, когда один MCP-сервер недоступен - агент теряет все инструменты?", "expect": "documents"},
+        {"text": "Что делает оркестратор, если стадия цепочки вернула результат, который следующая стадия не может использовать?", "expect": "documents"},
+        {"text": "Решение для задачи: оставляем реранкинг эвристическим, отдельную ML-модель не подключаем.", "expect": "decision"},
+        {"text": "Какая переменная окружения выключает планировщик периодических дайджестов и что происходит с инструментами?", "expect": "documents"},
+        {"text": "Требование для задачи: у каждого ответа должны быть источники.", "expect": "requirement"},
+        {"text": "Что именно проверяет usable() у результата стадии search?", "expect": "documents"},
+        {"text": "Как сообщение из Android-приложения доходит до инструмента в отдельном процессе?", "expect": "documents"},
+        {"text": "Какой у нас сейчас goal?", "expect": "memory"},
+        {"text": "Какие ограничения, термины и решения мы подтвердили?", "expect": "memory"},
+        {"text": "Какую реляционную базу данных проект использует для хранения диалогов?", "expect": "unknown"},
+        {"text": "Хорошо. Собери итог архитектуры с учётом всех наших ограничений.", "expect": "memory"}
+      ]
+    }
+  ]
+}
