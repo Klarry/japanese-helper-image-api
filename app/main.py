@@ -8,6 +8,7 @@ from app.api.routes import (
     description,
     image_search,
     kanji_word_set,
+    local_llm,
     model_comparison,
     temperature_description,
 )
@@ -40,3 +41,4 @@ app.include_router(kanji_word_set.router)
 app.include_router(temperature_description.router)
 app.include_router(model_comparison.router)
 app.include_router(agent.router)
+app.include_router(local_llm.router)

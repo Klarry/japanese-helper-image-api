@@ -1,5 +1,8 @@
 .env
 .venv/
+# A second venv for running this on macOS: the one above was built on the
+# VPS and its binaries are Linux (Day 26 runs the local model on the laptop).
+.venv-mac/
 __pycache__/
 *.pyc
 *.log

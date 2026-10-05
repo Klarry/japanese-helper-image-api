@@ -842,6 +842,124 @@ Two rules make a chat out of the pieces:
   the closing questions, and writes `data/chat/day25_results.json` with eight
   checks per scenario.
 
+## Local LLM through Ollama (Day 26)
+
+A second provider, standing beside Gemini rather than in front of it. The
+agent, the RAG pipeline, the MCP tools and the mini chat all still call
+Gemini and know nothing about this; the local model has one endpoint, one
+CLI, and no other reach into the project. A test enforces that: if any
+module under `app/services/` ever imports `ollama_service`, it fails.
+
+### Running it
+
+```bash
+brew install ollama          # or download Ollama.app from ollama.com
+ollama serve                 # or just open the app
+ollama pull qwen3:4b
+```
+
+```bash
+python -m app.local_llm --health
+python -m app.local_llm "What is MCP?"
+python -m app.local_llm --demo          # the three prompts below, answers saved
+python -m app.local_llm "..." --thinking
+```
+
+```
+Ollama: available (http://localhost:11434)
+Model: qwen3:4b
+
+Prompt:
+What is MCP?
+
+Response:
+...
+
+[4.21s · 14 in · 302 out]
+```
+
+Over HTTP:
+
+```bash
+curl -s localhost:8000/local-llm/health
+curl -s localhost:8000/local-llm -H 'Content-Type: application/json' \
+     -d '{"prompt": "What is MCP?"}'
+```
+
+```json
+{"model": "qwen3:4b", "response": "..."}
+```
+
+`/local-llm/health` answers 200 even when Ollama is down - a health check
+that returns an error status for an unhealthy dependency cannot be told
+apart from one that is broken itself. The verdict is in the body:
+
+```json
+{"available": true,  "model": "qwen3:4b", "model_installed": true, "models": ["qwen3:4b"]}
+{"available": false, "model": "qwen3:4b", "error": "Ollama is not running at ..."}
+```
+
+### Configuration
+
+| Variable | Default | What it is |
+| --- | --- | --- |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | where Ollama listens |
+| `OLLAMA_MODEL` | `qwen3:4b` | which model answers |
+| `OLLAMA_TIMEOUT` | `300` | seconds; its own, because a cold local model loads weights before the first token |
+
+Read from the environment by `app/services/ollama_service.py` rather than
+imported from `app/core/config.py`, for the reason `rag_settings` does the
+same: config requires `GEMINI_API_KEY` at import time, and the point of a
+local model is that it runs with no cloud key at all. A test proves it, in
+a fresh interpreter with the variable unset.
+
+### When it goes wrong
+
+Five failures, five messages, none of them swallowed. Each one says what
+happened and what to do about it:
+
+| Reason | Status | What you see |
+| --- | --- | --- |
+| `not_running` | 503 | `Ollama is not running at ... Start it with: ollama serve` |
+| `model_not_installed` | 503 | `The model 'qwen3:4b' is not installed. Pull it with: ollama pull qwen3:4b` |
+| `timeout` | 503 | `Ollama did not answer within 300s ... try again, or raise OLLAMA_TIMEOUT` |
+| `http_error` | 502 | `Ollama returned HTTP 500: <the body>` |
+| `empty_response` | 502 | `Ollama returned an empty response for model 'qwen3:4b'` |
+
+503 means the local server is the problem and it is worth trying again;
+502 means it answered, and the answer was no use.
+
+### The three prompts
+
+`--demo` asks three questions of deliberately uneven difficulty and writes
+whatever came back to `data/local_llm/day26_results.json` - real answers,
+no fixtures:
+
+1. simple - `What is MCP?`
+2. medium - `Explain the difference between MCP client and MCP server.`
+3. complex - `Explain how an AI agent could use multiple MCP servers to execute a multi-step task.`
+
+### Thinking models
+
+`qwen3` narrates before it answers. Newer Ollama returns that narration in
+its own `thinking` field; older builds leave it inline in `<think>` tags.
+Either way the service separates it from the answer and keeps it - it is
+real output, so it is not thrown away, but it is not printed as the answer
+either. `--thinking` shows it.
+
+### Tests
+
+`tests/test_local_llm.py` - 31 tests, none of which load a model. They
+drive the service through `httpx.MockTransport`, so the request this code
+actually builds is the one under test while no socket is ever opened. The
+one test that does want a real model is marked `integration` and skips
+itself unless Ollama answers on this machine.
+
+```bash
+pytest tests/test_local_llm.py
+pytest -m integration            # only on a machine running Ollama
+```
+
 ## Layout
 
 ```
@@ -858,6 +976,7 @@ app/compare_rag.py            the same ten, three modes: off / baseline / enhanc
 app/evaluate_citations.py     the same ten, checked for sources, quotes and support (Day 24)
 app/chat.py                   the mini chat: history, task memory, RAG per question (Day 25)
 app/evaluate_chat.py          the two long scenarios, run and checked (Day 25)
+app/local_llm.py              ask the local model from a terminal (Day 26)
 data/documents/               the corpus that does not live in this repo (Android sources, PDFs)
 mcp_servers/                  MCP servers, each run as its own subprocess (japanese_learning: Day 16,
                               jlpt_vocab: Days 17-18, japanese_data + processing + storage: Days 19-20)

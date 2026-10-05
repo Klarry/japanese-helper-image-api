@@ -170,3 +170,19 @@ RAG_QUERY_REWRITE_ENABLED = os.getenv("RAG_QUERY_REWRITE_ENABLED", "true").strip
 # worth answering from. Below it the answer is "I don't know based on the
 # indexed documents" and there is no model call.
 RAG_ANSWER_THRESHOLD = float(os.getenv("RAG_ANSWER_THRESHOLD", "0.70"))
+
+# --- Local LLM through Ollama (Day 26) -------------------------------------
+# A second provider standing beside Gemini, not in front of it. Nothing in
+# the agent, the RAG pipeline or the MCP tools goes through it: it has its
+# own endpoint and its own CLI, and every existing caller keeps Gemini.
+# Declared here with the rest of the settings; read by
+# app.services.ollama_service, which takes them from the environment
+# directly for the reason rag_settings does - config requires
+# GEMINI_API_KEY at import time, and a local model has to be usable with no
+# cloud key at all.
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:4b")
+# Its own timeout rather than HTTP_TIMEOUT: a local model is slower than a
+# hosted API, and the first call after a restart also has to load the
+# weights into memory before any token comes back.
+OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "300"))
