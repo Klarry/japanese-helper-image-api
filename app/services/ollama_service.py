@@ -43,6 +43,12 @@ MODEL = os.getenv("OLLAMA_MODEL", "qwen3:4b")
 #: several gigabytes of weights off disk before the first token exists.
 TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "300"))
 
+#: The name of this mode, as the API reports it and the app displays it
+#: (Day 27). Not configurable: it is not a setting, it is which half of the
+#: project you are in. "gemini" is the other half, and nothing switches
+#: between them on its own - there is no fallback in either direction.
+PROVIDER = "ollama"
+
 GENERATE_PATH = "/api/generate"
 TAGS_PATH = "/api/tags"
 
@@ -212,7 +218,13 @@ async def generate(prompt: str, model: str = "") -> LocalAnswer:
     """
     wanted = model or MODEL
     payload = {"model": wanted, "prompt": prompt, "stream": False}
-    logger.info("Calling Ollama model=%s at %s", wanted, BASE_URL)
+    # Labelled on purpose, and here rather than in a route: every caller -
+    # the endpoint, the chat endpoint and the CLI - goes through this
+    # function, so a log that says [LocalLLM] is proof the local path ran
+    # and not something that had to be remembered at four call sites.
+    logger.info("[LocalLLM] Provider: %s", PROVIDER)
+    logger.info("[LocalLLM] Model: %s", wanted)
+    logger.info("[LocalLLM] Request sent to %s%s", BASE_URL, GENERATE_PATH)
     started = time.monotonic()
 
     try:
@@ -251,6 +263,8 @@ async def generate(prompt: str, model: str = "") -> LocalAnswer:
         # answer: the caller asked for a response, and there isn't one.
         logger.warning("Ollama returned an empty response for model %s", wanted)
         raise _empty(wanted)
+
+    logger.info("[LocalLLM] Response received in %.2fs", seconds)
 
     return LocalAnswer(
         response=answer,

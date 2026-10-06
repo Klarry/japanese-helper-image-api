@@ -960,6 +960,97 @@ pytest tests/test_local_llm.py
 pytest -m integration            # only on a machine running Ollama
 ```
 
+## The app on the local model (Day 27)
+
+Day 26 put a local model behind a CLI. Day 27 puts the Android app in front
+of it - through the same backend, the same Retrofit instance and the same
+chat screen as everything else:
+
+```
+Android -> ViewModel -> Repository -> POST /local-chat -> OllamaService -> Ollama -> qwen3:4b
+```
+
+The device never addresses Ollama. It does not know the port and should
+not: a client that could choose the model, the provider or the endpoint
+could also claim an answer was local when it was not.
+
+### The endpoint
+
+```bash
+curl -s localhost:8000/local-chat -H 'Content-Type: application/json' \
+     -d '{"message": "What is MCP?"}'
+```
+
+```json
+{"response": "...", "model": "qwen3:4b", "provider": "ollama", "seconds": 23.5}
+```
+
+`provider` is reported rather than assumed, so the screen says "answered
+locally" only because the backend said so.
+
+### No fallback, in either direction
+
+This is the claim the day is actually making, so it is the one most heavily
+tested. When the local model cannot answer, the request **fails**:
+
+```json
+{"error": "Local LLM is unavailable", "reason": "not_running", "detail": "Ollama is not running at ... ollama serve"}
+```
+
+`error` is the one line the app shows; `reason` and `detail` keep the Day 26
+rule that nothing is swallowed. There is deliberately no field for a
+fallback answer, because there is deliberately no fallback - an answer
+quietly fetched from Gemini would be a different claim wearing the same
+response shape.
+
+Three tests hold that:
+
+| Test | What would break it |
+| --- | --- |
+| `test_the_local_flow_never_calls_gemini` | every Gemini entry point raises; a 200 means the answer could only be local |
+| `test_a_local_model_that_is_down_does_not_become_a_cloud_model` | Ollama unreachable **and** Gemini sabotaged: must be 503, not an answer |
+| `test_the_route_module_has_no_way_to_reach_the_cloud` | parsed imports and module namespace, not a text search |
+
+### Logging
+
+Emitted from the service rather than from a route, so the CLI, `/local-llm`
+and `/local-chat` all produce them and no call site has to remember:
+
+```
+INFO:app.services.ollama_service:[LocalLLM] Provider: ollama
+INFO:app.services.ollama_service:[LocalLLM] Model: qwen3:4b
+INFO:app.services.ollama_service:[LocalLLM] Request sent to http://localhost:11434/api/generate
+INFO:app.services.ollama_service:[LocalLLM] Response received in 23.50s
+```
+
+### On the screen
+
+A `Provider:` row with two chips - `Cloud` and `Local LLM` - above the
+existing ask-target chips, which hide while the local model is chosen
+because they name cloud pipelines. Under it, one line of status:
+
+```
+Local LLM: qwen3:4b · Status: Connected
+Local LLM: qwen3:4b is not pulled on the backend
+Local LLM: unavailable
+```
+
+"Connected" is claimed only when the server answered **and** has the model.
+A running Ollama without the weights pulled cannot answer a question, and
+saying it is connected would be a lie the person discovers one message
+later. The line is read from `GET /local-llm/health` when the switch is
+thrown, so it is true before the first question rather than after it, and
+re-read whenever a local question fails.
+
+### Tests
+
+`tests/test_local_chat.py` - 14 unit tests plus one `integration` test that
+skips itself unless Ollama is up. On the device, `check_android27.py`
+(15 checks) reads the Kotlin the way a compiler would: that the chain is
+the existing one, that the local branch in `send()` comes before every
+cloud branch, and that nothing under `app/src/main` mentions Ollama or port
+11434 at all.
+
 ## Layout
 
 ```

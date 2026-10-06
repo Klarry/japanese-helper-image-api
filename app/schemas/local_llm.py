@@ -45,3 +45,52 @@ class LocalLlmHealthResponse(BaseModel):
     model_installed: bool | None = None
     models: list[str] | None = None
     error: str | None = None
+
+
+class LocalChatRequest(BaseModel):
+    """What the app sends (Day 27). One field.
+
+    Named ``message`` rather than ``prompt`` because this is the chat the
+    app talks to, not the Day 26 demo - and a device that could also set
+    the model or the provider could also contradict them.
+    """
+
+    message: str
+
+    @field_validator("message")
+    @classmethod
+    def message_must_not_be_blank(cls, value: str) -> str:
+        stripped = value.strip()
+
+        if not stripped:
+            raise ValueError("message must not be empty")
+
+        return stripped
+
+
+class LocalChatResponse(BaseModel):
+    """The answer, and who produced it.
+
+    ``provider`` is here so the screen can say *which* model answered
+    without inferring it from the model name, and so a reply that somehow
+    came from the cloud could not be mistaken for a local one.
+    """
+
+    response: str
+    model: str
+    provider: str
+    seconds: float
+
+
+class LocalChatUnavailable(BaseModel):
+    """What comes back when the local model cannot answer.
+
+    ``error`` is the one line the app shows. ``reason`` and ``detail`` are
+    the Day 26 rule kept: the real cause is not swallowed, and the detail
+    still says what to do about it. There is deliberately no field for a
+    fallback answer, because there is deliberately no fallback.
+    """
+
+    error: str
+    reason: str
+    detail: str
