@@ -25,6 +25,7 @@ import time
 from dataclasses import dataclass
 
 from app.services.gemini_service import generate_text
+from app.services.llm_provider import ProviderUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +117,14 @@ def clean(text: str) -> str:
 class QueryRewriter:
     """Question in, search query out."""
 
-    def __init__(self, enabled: bool = True) -> None:
+    def __init__(self, enabled: bool = True, provider=None) -> None:
         self._enabled = enabled
+        #: Day 28. ``None`` keeps the Gemini call this class has made since
+        #: Day 23, untouched; a provider sends the rewrite to whichever
+        #: model is answering instead. The rewrite is a model call like any
+        #: other, so leaving it in the cloud while the endpoint said
+        #: "local" would have been a quiet lie.
+        self._provider = provider
 
     @property
     def enabled(self) -> bool:
@@ -139,8 +146,22 @@ class QueryRewriter:
         started = time.perf_counter()
 
         try:
-            generated = await generate_text(_INSTRUCTIONS.format(question=text), temperature=0.0)
+            instructions = _INSTRUCTIONS.format(question=text)
+
+            if self._provider is None:
+                generated = await generate_text(instructions, temperature=0.0)
+            else:
+                generated = (await self._provider.generate(instructions, temperature=0.0)).text
+
             query = clean(generated)
+        except ProviderUnavailable:
+            # Day 28. Everything else here is survivable - a rewrite that
+            # does not work is not a reason to answer nothing. But a model
+            # that cannot be reached at all will not write the answer
+            # either, and degrading to keywords would turn "your local
+            # model is off" into "I don't know based on the indexed
+            # documents", which sends the person looking in the wrong place.
+            raise
         except Exception as error:  # noqa: BLE001 - a failed rewrite must not stop the answer
             logger.warning("Query rewrite failed (%s); falling back to keywords", error)
             query = ""

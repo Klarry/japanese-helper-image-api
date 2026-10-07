@@ -147,7 +147,9 @@ def lexically_unsupported(claims: Sequence[str], evidence: str) -> tuple[str, ..
     return tuple(weak)
 
 
-async def check(answer: str, quotes: Sequence[str], use_model: bool = True) -> Support:
+async def check(
+    answer: str, quotes: Sequence[str], use_model: bool = True, provider=None
+) -> Support:
     """Whether the answer's claims stand on the quoted evidence."""
     claims = claims_in(answer)
     evidence = "\n".join(f"- {quote}" for quote in quotes if quote)
@@ -158,7 +160,7 @@ async def check(answer: str, quotes: Sequence[str], use_model: bool = True) -> S
         return Support(verdict=NOT_CHECKED, checked_by="", claims=claims)
 
     if use_model:
-        verdict = await _ask_model(claims, evidence)
+        verdict = await _ask_model(claims, evidence, provider)
 
         if verdict is not None:
             unsupported = verdict
@@ -196,15 +198,25 @@ async def check(answer: str, quotes: Sequence[str], use_model: bool = True) -> S
     return result
 
 
-async def _ask_model(claims: Sequence[str], evidence: str) -> tuple[str, ...] | None:
+async def _ask_model(
+    claims: Sequence[str], evidence: str, provider=None
+) -> tuple[str, ...] | None:
     """The claims the model says are unsupported, or None when it could not
-    be asked. A failed check is never a failed answer."""
+    be asked. A failed check is never a failed answer.
+
+    Day 28: ``provider`` None keeps the Gemini call this has made since
+    Day 24. With one, the check is run by whichever model wrote the answer -
+    this prompt carries the quoted evidence, so leaving it in the cloud
+    would send retrieved documents there in a mode that promised not to.
+    """
     numbered = "\n".join(f"{number}. {claim}" for number, claim in enumerate(claims, start=1))
+    instructions = _INSTRUCTIONS.format(evidence=evidence, claims=numbered)
 
     try:
-        reply = await generate_text(
-            _INSTRUCTIONS.format(evidence=evidence, claims=numbered), temperature=0.0
-        )
+        if provider is None:
+            reply = await generate_text(instructions, temperature=0.0)
+        else:
+            reply = (await provider.generate(instructions, temperature=0.0)).text
     except Exception as error:  # noqa: BLE001 - the answer stands either way
         logger.warning("[Support] the check could not be run (%s); falling back to words", error)
 

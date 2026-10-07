@@ -132,10 +132,13 @@ class EnhancedRetriever:
         rewriter: QueryRewriter | None = None,
         relevance_filter: RelevanceFilter | None = None,
         reranker: Reranker | None = None,
+        provider=None,
     ) -> None:
         self._retriever = retriever or RAGRetriever()
         self._settings = settings
-        self._rewriter = rewriter or QueryRewriter(enabled=settings.query_rewrite)
+        self._rewriter = rewriter or QueryRewriter(
+            enabled=settings.query_rewrite, provider=provider
+        )
         self._filter = relevance_filter or RelevanceFilter(settings.similarity_threshold)
         self._reranker = reranker or Reranker(
             similarity_weight=settings.similarity_weight,

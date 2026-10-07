@@ -10,6 +10,7 @@ from app.api.routes import (
     kanji_word_set,
     local_llm,
     model_comparison,
+    rag_chat,
     temperature_description,
 )
 from app.core.config import AGENT_DIGEST_SCHEDULER_ENABLED, LOG_LEVEL
@@ -42,3 +43,4 @@ app.include_router(temperature_description.router)
 app.include_router(model_comparison.router)
 app.include_router(agent.router)
 app.include_router(local_llm.router)
+app.include_router(rag_chat.router)

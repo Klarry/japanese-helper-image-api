@@ -1051,6 +1051,96 @@ the existing one, that the local branch in `send()` comes before every
 cloud branch, and that nothing under `app/src/main` mentions Ollama or port
 11434 at all.
 
+## Local RAG: the same pipeline, either model (Day 28)
+
+Days 21-24 built one retrieval pipeline. Day 28 does not build a second
+one - it makes the generator a parameter:
+
+```
+question -> rewrite -> FAISS -> filter (>= 0.70) -> rerank -> top 3
+         -> relevance gate -> [ gemini | ollama ] -> answer + sources + citations
+```
+
+```bash
+curl -s localhost:8000/rag/chat -H 'Content-Type: application/json' \
+     -d '{"message": "Which MCP servers does the project register?", "provider": "ollama"}'
+```
+
+The response is the Day 24 schema with `provider`, `model` and `timing`
+added - a client written for Day 24 can still read it.
+
+### The pipeline has three model calls, not one
+
+This is the part that makes the mode honest, and the part a naive
+implementation gets wrong. Swapping only the call that writes the answer
+would leave two thirds of the work in the cloud:
+
+| Call | Added | What its prompt carries |
+| --- | --- | --- |
+| query rewrite | Day 23 | the question |
+| the answer | Day 22 | the question **and the retrieved chunks** |
+| claim support | Day 24 | the answer **and the quoted evidence** |
+
+All three take the provider. `test_nothing_in_the_local_pipeline_reaches_the_cloud`
+books every Gemini entry point as a trap and drives the whole pipeline
+through a recording provider: it asserts three prompts arrived, which is
+the only way to notice if one of them went somewhere else.
+
+One consequence worth knowing: when the local model is down, the **rewrite**
+is the first call to fail. It used to swallow every error and fall back to
+keywords, which would have turned "your local model is off" into "I don't
+know based on the indexed documents" - so `ProviderUnavailable` now
+propagates while everything else still falls back.
+
+### What does not change with the provider
+
+Retrieval is local in both modes and always was. The FAISS index of Day 21,
+the chunk metadata, the similarity filter and reranker of Day 23, the
+relevance gate and the citation validation of Day 24 are the same code on
+both paths. That is what makes the comparison worth anything: the
+difference in the numbers is the difference between two models, not between
+two pipelines.
+
+The anti-hallucination gate sits in front of both. Below the threshold
+neither model is asked, and the reply is the Day 24 one:
+
+```json
+{"answer": "I don't know based on the indexed documents...", "sources": [], "citations": [],
+ "confidence": "low", "rag_status": "insufficient_context", "provider": "ollama"}
+```
+
+### No fallback
+
+An unreachable local model returns 503 with
+`{"error": "Local LLM is unavailable", "provider": "ollama", "reason": …, "detail": …}`.
+An unknown provider name is a 422, not a quiet default to the cloud - that
+default is exactly the failure this mode exists to prevent.
+
+### Evaluation
+
+```bash
+python -m app.evaluate_day28
+python -m app.evaluate_day28 --providers ollama --answer-threshold 0.60
+python -m app.evaluate_day28 --only 1 2 3
+```
+
+The ten control questions of Days 22-24, each asked twice through the same
+index. Results go to `data/evaluation/day28_results.json`: per run the
+answer, sources, citations, status, confidence, retrieval/generation/total
+milliseconds and chunk counts; per provider the averages, how many were
+answered, how many refused, how many errored, and citation validity
+re-checked here rather than reported by the pipeline.
+
+Averages are taken over the runs that produced an answer, with `errors`
+beside them - a provider that failed half the questions should not get a
+flattering mean out of the half it skipped.
+
+### Tests
+
+`tests/test_rag_local.py` - 16 tests, no model and no index: a fake
+retriever, a recording provider, and `httpx.MockTransport` for the Ollama
+client.
+
 ## Layout
 
 ```
@@ -1068,6 +1158,7 @@ app/evaluate_citations.py     the same ten, checked for sources, quotes and supp
 app/chat.py                   the mini chat: history, task memory, RAG per question (Day 25)
 app/evaluate_chat.py          the two long scenarios, run and checked (Day 25)
 app/local_llm.py              ask the local model from a terminal (Day 26)
+app/evaluate_day28.py         the same ten questions through both providers (Day 28)
 data/documents/               the corpus that does not live in this repo (Android sources, PDFs)
 mcp_servers/                  MCP servers, each run as its own subprocess (japanese_learning: Day 16,
                               jlpt_vocab: Days 17-18, japanese_data + processing + storage: Days 19-20)

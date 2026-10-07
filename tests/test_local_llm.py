@@ -95,19 +95,47 @@ def test_the_local_model_needs_no_cloud_key():
     assert result.stdout.strip() == "qwen3:4b"
 
 
+#: The one module allowed to reach the local model from inside the service
+#: layer. Day 28 made it the bridge on purpose: the RAG pipeline asks a
+#: provider for text, and the provider decides which model that is. Anything
+#: else importing the local service would be a day's decision nobody made.
+ALLOWED_IMPORTERS = {"llm_provider.py"}
+
+
 def test_nothing_existing_was_rewired_through_the_local_model():
-    """Day 26 adds a provider; it does not replace one. If the agent, the
-    RAG pipeline, the mini chat or the MCP tools ever import this service,
-    that is a different day's decision and this test should be the one
-    that notices."""
+    """Day 26 added a provider; it did not replace one.
+
+    The agent, the mini chat and the MCP tools still reach exactly one model
+    and know nothing about this service. The RAG pipeline reaches it only
+    through ``llm_provider``, which is a choice made per request - and
+    through nothing else.
+    """
     service_dir = pathlib.Path(ollama_service.__file__).parent
-    importers = [
+    importers = {
         path.name
         for path in service_dir.glob("*.py")
         if "ollama_service" in path.read_text(encoding="utf-8") and path.name != "ollama_service.py"
-    ]
+    }
 
-    assert importers == []
+    assert importers <= ALLOWED_IMPORTERS, f"unexpected: {sorted(importers - ALLOWED_IMPORTERS)}"
+
+
+def test_the_agent_and_the_mini_chat_never_reach_the_local_model():
+    """The narrower half of the same rule, named separately because it is
+    the half that would actually surprise someone: Day 25's chat and the
+    learning agent are Gemini's, and stayed that way."""
+    service_dir = pathlib.Path(ollama_service.__file__).parent
+    untouched = (
+        "japanese_learning_agent.py",
+        "chat_session.py",
+        "agent_pipeline.py",
+        "agent_tools.py",
+    )
+
+    for name in untouched:
+        text = (service_dir / name).read_text(encoding="utf-8")
+
+        assert "ollama" not in text.lower(), name
 
 
 # --- health check ----------------------------------------------------------

@@ -28,7 +28,7 @@ import time
 from dataclasses import dataclass, field
 
 from app.services import claim_support
-from app.services.gemini_service import generate_text_with_usage
+from app.services.gemini_service import TEXT_MODEL, GeneratedText, generate_text_with_usage
 from app.services.rag_citations import Source, validate
 from app.services.rag_enhanced import EnhancedRetrieval, EnhancedRetriever
 from app.services.rag_prompt import cited_prompt, plain_prompt, rag_prompt
@@ -134,11 +134,20 @@ class RagAgent:
         settings: RagSettings = DEFAULT_SETTINGS,
         enhanced: EnhancedRetriever | None = None,
         check_support: bool = True,
+        provider=None,
     ) -> None:
         self._retriever = retriever or RAGRetriever()
         self._top_k = top_k
         self._settings = settings
-        self._enhanced = enhanced or EnhancedRetriever(retriever=self._retriever, settings=settings)
+        #: Day 28. Who writes the answer - and, just as importantly, who
+        #: rewrites the query and who runs the support check. All three are
+        #: model calls, and a mode that only swapped the middle one would
+        #: still be two thirds in the cloud. ``None`` is Gemini through the
+        #: module-level call this agent has used since Day 22.
+        self._provider = provider
+        self._enhanced = enhanced or EnhancedRetriever(
+            retriever=self._retriever, settings=settings, provider=provider
+        )
         #: Whether the support check may use a model. Off, it still runs -
         #: on words rather than meaning - and says which it was.
         self._check_support = check_support
@@ -154,6 +163,15 @@ class RagAgent:
     @property
     def settings(self) -> RagSettings:
         return self._settings
+
+    @property
+    def provider_name(self) -> str:
+        """Which model answers, in the response's own words."""
+        return getattr(self._provider, "name", "gemini")
+
+    @property
+    def model_name(self) -> str:
+        return getattr(self._provider, "model", TEXT_MODEL)
 
     async def ask(
         self,
@@ -252,6 +270,7 @@ class RagAgent:
             checked.answer,
             [citation.quote for citation in checked.citations],
             use_model=self._check_support,
+            provider=self._provider,
         )
         cited = CitedAnswer(
             answer=checked.answer,
@@ -333,7 +352,21 @@ class RagAgent:
         return [chunk for chunk in chunks if chunk.chunk_id in wanted]
 
     async def _generate(self, prompt: str):
+        """The one call that writes the answer.
+
+        With no provider this is the Gemini call every mode has made since
+        Day 22, through the module-level name the tests reach. With one,
+        the prompt - retrieved chunks and all - goes to that provider and
+        nowhere else.
+        """
         started = time.perf_counter()
-        generated = await generate_text_with_usage(prompt)
+
+        if self._provider is None:
+            generated = await generate_text_with_usage(prompt)
+        else:
+            produced = await self._provider.generate(prompt)
+            generated = GeneratedText(
+                produced.text, produced.input_tokens, produced.output_tokens
+            )
 
         return generated, time.perf_counter() - started
