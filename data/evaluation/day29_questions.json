@@ -77,9 +77,9 @@
       "expected": "Short-term: the current conversation, this session's messages. Working: the current task - its goals, requirements, constraints, the decisions already taken and the agreed terms. Long-term: what stays true about the learner across conversations - profile, preferences, decisions and knowledge.",
       "expected_sources": ["app/services/agent_memory.py"],
       "rubric": [
-        {"fact": "short-term", "any": ["short[- ]term"]},
+        {"fact": "short-term", "any": ["short[-_ ]term"]},
         {"fact": "working", "any": ["\\bworking\\b"]},
-        {"fact": "long-term", "any": ["long[- ]term"]},
+        {"fact": "long-term", "any": ["long[-_ ]term"]},
         {"fact": "short-term = the conversation", "any": ["conversation", "messages", "transcript"]},
         {"fact": "working = the task", "any": ["\\btask", "goals", "requirements", "constraints"]},
         {"fact": "long-term = the learner", "any": ["learner", "profile", "preferences", "knowledge"]}
@@ -93,7 +93,7 @@
       "expected": "Long-term first, then working, then short-term - from the most durable to the most immediate. An empty layer is left out rather than sent as an empty heading, because it tells the model nothing and still costs tokens.",
       "expected_sources": ["app/services/agent_memory.py"],
       "rubric": [
-        {"fact": "long-term, working, short-term", "any": ["long[- ]term.{0,240}working.{0,240}short[- ]term"]},
+        {"fact": "long-term, working, short-term", "any": ["long[-_ ]term.{0,240}working.{0,240}short[-_ ]term"]},
         {"fact": "empty layers are left out", "any": ["empty[^.]{0,120}(left out|omitted|skipped|not (sent|included)|excluded|dropped|leaves? out)", "(left out|omitted|skipped|not (sent|included)|excluded|dropped)[^.]{0,120}empty"]}
       ]
     },
@@ -105,7 +105,7 @@
       "expected": "It treats it as 'nothing remembered yet' and returns an empty LongTermMemory instead of raising (an unreadable file is logged as a warning), so a damaged file can never take the agent down.",
       "expected_sources": ["app/services/agent_memory.py"],
       "rubric": [
-        {"fact": "reads as nothing remembered / empty memory", "any": ["nothing remembered", "empty (long[- ]term )?memory", "longtermmemory\\(\\)", "returns? (an )?empty", "empty longtermmemory"]},
+        {"fact": "reads as nothing remembered / empty memory", "any": ["nothing remembered", "empty (long[-_ ]term )?memory", "longtermmemory\\(\\)", "returns? (an )?empty", "empty longtermmemory"]},
         {"fact": "does not raise / cannot take the agent down", "any": ["rather than rais", "instead of rais", "(does not|doesn't|never|without|not) rais", "never take", "take the agent down", "not (crash|fail)", "fail[- ]safe"]}
       ]
     },

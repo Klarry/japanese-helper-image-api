@@ -665,3 +665,65 @@ def test_the_evaluation_runs_every_profile_on_the_same_context(monkeypatch, tmp_
     assert summary["insufficient_handled"] == 1
     assert summary["correctness_mean"] == 1.0
     assert (tmp_path / "day29_summary.txt").read_text().startswith("=" * 10)
+
+
+# --- scoring v2: what the first real run taught ----------------------------------------
+
+
+def test_an_answer_cut_off_by_the_token_limit_scores_nothing():
+    """The first run: qwen3:4b-thinking told not to think reasoned in plain
+    text, was cut at 512 tokens, and the reasoning - which quotes the
+    context - matched every rubric fact. Scoring v2 does not count it."""
+    reasoning = (
+        "We are given three extracts. Extract [2] says: A server that cannot be reached "
+        "takes only its own tools with it. So the answer is no, but let me check"
+    )
+    question = _question(3)
+
+    assert evaluate_day29.score(question, reasoning)["score"] == 1.0
+    cut = evaluate_day29.score(question, reasoning, complete=False)
+    assert cut["score"] == 0.0
+    assert cut["incomplete"] is True
+    assert cut["refused"] is False
+
+
+def test_a_layer_name_written_as_code_still_counts():
+    """short_term is how the code spells short-term; v1 missed it."""
+    answer = (
+        "The three layers are short_term, working and long_term: the conversation, "
+        "the task, and the learner."
+    )
+
+    assert evaluate_day29.score(_question(6), answer)["score"] == 1.0
+
+
+def test_rescoring_changes_verdicts_and_nothing_measured(tmp_path):
+    complete = {
+        "question_id": 3, "kind": "answer", "profile": "p", "error": "", "error_reason": "",
+        "answer": "No - it takes only its own tools with it.", "rag_status": ANSWERED,
+        "done_reason": "stop", "model_calls": 1, "generation_ms": 3000, "support_ms": None,
+        "total_ms": 3000, "generated_tokens": 60, "tokens_per_second": 60.0,
+        "citations_total": 1, "citations_valid": 1, "correctness": {"score": 0.0},
+    }
+    cut = dict(complete, profile="q", answer="We are given extracts... its own tools", done_reason="length",
+               generated_tokens=512, citations_total=0, citations_valid=0, correctness={"score": 1.0})
+    document = {
+        "profiles": {"p": {"name": "p", "model": "m"}, "q": {"name": "q", "model": "m"}},
+        "summary": {"p": {"bench": {"warm_median_wall_ms": 1}}, "q": {"bench": None}},
+        "results": [complete, cut],
+    }
+    path = tmp_path / "day29_results.json"
+    path.write_text(json.dumps(document))
+    options = evaluate_day29.parse_args(["--rescore", "--results", str(path), "--only", "3"])
+
+    assert evaluate_day29.run_rescore(options) == 0
+
+    rescored = json.loads(path.read_text())
+    by_profile = {run["profile"]: run for run in rescored["results"]}
+    assert by_profile["p"]["correctness"]["score"] == 1.0
+    assert by_profile["q"]["correctness"]["score"] == 0.0
+    assert rescored["summary"]["q"]["incomplete_answers"] == 1
+    assert rescored["summary"]["p"]["bench"] == {"warm_median_wall_ms": 1}
+    assert by_profile["q"]["generated_tokens"] == 512
+    assert rescored["scoring"]["version"] == 2
+    assert (tmp_path / "day29_results.scoring-v1.json").exists()

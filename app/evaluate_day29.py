@@ -155,15 +155,33 @@ def is_refusal(answer: str) -> bool:
     return bool(REFUSAL.search(answer or ""))
 
 
-def score(question: Question, answer: str, rag_status: str = "") -> dict:
+def score(question: Question, answer: str, rag_status: str = "", complete: bool = True) -> dict:
     """How right one answer is, against the question's own rubric.
 
     Answerable: the share of rubric facts the answer states (0..1).
     Unanswerable: 1 when it refuses - or says plainly that the thing asked
     about does not exist - without stating anything the forbidden patterns
     catch; 0 otherwise. A refusal by the relevance gate counts as a refusal.
+
+    An answer the token limit cut off (``complete=False``) scores 0 whatever
+    it contains. Scoring v1 did not do this, and the first Day 29 run showed
+    why it must: a thinking model told not to think reasoned in plain text
+    instead, was cut at 512 tokens, and its reasoning - which quotes the
+    context - matched the rubric. Words from the context are not an answer.
     """
     text = answer or ""
+
+    if not complete:
+        return {
+            "score": 0.0,
+            "correct": False,
+            "matched": [],
+            "missing": [fact.name for fact in question.rubric],
+            "refused": False,
+            "forbidden": [],
+            "incomplete": True,
+        }
+
     refused = rag_status == INSUFFICIENT or is_refusal(text)
 
     if question.answerable:
@@ -178,6 +196,7 @@ def score(question: Question, answer: str, rag_status: str = "") -> dict:
             "missing": missing,
             "refused": refused,
             "forbidden": [],
+            "incomplete": False,
         }
 
     forbidden = [pattern.pattern for pattern in question.forbidden if pattern.search(text)]
@@ -191,6 +210,7 @@ def score(question: Question, answer: str, rag_status: str = "") -> dict:
         "missing": [],
         "refused": refused,
         "forbidden": forbidden,
+        "incomplete": False,
     }
 
 
@@ -486,7 +506,12 @@ async def ask(profile: Profile, context: Context, settings: RagSettings, retriev
         citations_valid=recheck(answer),
         rejected_citations=len(cited.rejected_citations) if cited else 0,
         citation_support=cited.citation_support if cited else "",
-        correctness=score(question, text, cited.rag_status if cited else ""),
+        correctness=score(
+            question,
+            text,
+            cited.rag_status if cited else "",
+            complete=first.get("done_reason") != "length",
+        ),
         format_problem=format_problem(text),
         unsupported_identifiers=unsupported_identifiers(text, context.text, question.question),
         model_calls=len(calls),
@@ -607,8 +632,12 @@ def summarise(profile: Profile, runs: list[dict], benchmark: dict | None) -> dic
     unanswerable = [run for run in mine if run["kind"] == "insufficient"]
     ok = [run for run in mine if not run["error"]]
     generated = [run for run in ok if run.get("model_calls")]
+    # A reply the token limit cut off is not an answer: it is left out of
+    # everything that judges answers (citations, format, names), and counted
+    # on its own line instead.
+    complete = [run for run in ok if not run["correctness"].get("incomplete")]
     answered = [
-        run for run in ok if run["kind"] == "answer" and not run["correctness"]["refused"]
+        run for run in complete if run["kind"] == "answer" and not run["correctness"]["refused"]
     ]
 
     return {
@@ -621,21 +650,23 @@ def summarise(profile: Profile, runs: list[dict], benchmark: dict | None) -> dic
         "fully_correct": sum(1 for run in answerable if run["correctness"]["correct"]),
         "answerable": len(answerable),
         "false_refusals": sum(1 for run in answerable if run["correctness"]["refused"]),
+        "incomplete_answers": sum(1 for run in mine if run["correctness"].get("incomplete")),
         "insufficient_handled": sum(1 for run in unanswerable if run["correctness"]["correct"]),
         "insufficient_total": len(unanswerable),
         "insufficient_by_gate": sum(1 for run in unanswerable if run.get("rag_status") == INSUFFICIENT),
         "insufficient_hallucinated": sum(1 for run in unanswerable if run["correctness"]["forbidden"]),
-        "citations_total": sum(run.get("citations_total", 0) for run in ok),
-        "citations_valid": sum(run.get("citations_valid", 0) for run in ok),
+        "citations_total": sum(run.get("citations_total", 0) for run in complete),
+        "citations_valid": sum(run.get("citations_valid", 0) for run in complete),
         "citation_validity": round(
-            sum(run.get("citations_valid", 0) for run in ok)
-            / max(1, sum(run.get("citations_total", 0) for run in ok)),
+            sum(run.get("citations_valid", 0) for run in complete)
+            / max(1, sum(run.get("citations_total", 0) for run in complete)),
             4,
         ),
         "answers_with_citations": sum(1 for run in answered if run.get("citations_total")),
         "answers": len(answered),
-        "format_problems": sum(1 for run in ok if run.get("format_problem")),
-        "unsupported_identifiers": sum(len(run.get("unsupported_identifiers", [])) for run in ok),
+        "format_problems": sum(1 for run in complete if run.get("format_problem")),
+        "rejected_citations": sum(run.get("rejected_citations", 0) or 0 for run in complete),
+        "unsupported_identifiers": sum(len(run.get("unsupported_identifiers", [])) for run in complete),
         "median_generation_ms": _median([run["generation_ms"] for run in generated]),
         "median_support_ms": _median([run.get("support_ms") for run in generated]),
         "median_total_ms": _median([run["total_ms"] for run in generated]),
@@ -671,10 +702,12 @@ def table(summaries: list[dict]) -> str:
         ("correctness (mean 0-1)", lambda s: _fmt(s["correctness_mean"])),
         ("fully correct", lambda s: f"{s['fully_correct']}/{s['answerable']}"),
         ("false refusals", lambda s: str(s["false_refusals"])),
+        ("cut off (not an answer)", lambda s: str(s.get("incomplete_answers", 0))),
         ("insufficient handled", lambda s: f"{s['insufficient_handled']}/{s['insufficient_total']}"),
         ("  of them by the gate", lambda s: str(s["insufficient_by_gate"])),
         ("  invented an answer", lambda s: str(s["insufficient_hallucinated"])),
         ("citation validity", lambda s: f"{s['citations_valid']}/{s['citations_total']}"),
+        ("citations rejected", lambda s: str(s.get("rejected_citations", 0))),
         ("answers with citations", lambda s: f"{s['answers_with_citations']}/{s['answers']}"),
         ("format problems", lambda s: str(s["format_problems"])),
         ("unknown identifiers", lambda s: str(s["unsupported_identifiers"])),
@@ -696,11 +729,14 @@ def table(summaries: list[dict]) -> str:
 
     for column, summary in zip(columns, summaries):
         def given(name):
-            value = summary[name]
+            value = summary.get(name)
             return "default" if value is None else value
 
         options = " ".join(f"{name}={given(name)}" for name in ("temperature", "num_predict", "num_ctx", "think"))
-        lines.append(f"{column}  {summary['profile']}  ·  {summary['model']}  ·  {options}  ·  prompt {summary['prompt_version']}")
+        lines.append(
+            f"{column}  {summary['profile']}  ·  {summary.get('model', '?')}  ·  {options}  ·  "
+            f"prompt {summary.get('prompt_version', '?')}"
+        )
 
     lines.append("")
     lines.append(f"{'':<26}" + "".join(f"{column:>{width}}" for column in columns))
@@ -869,6 +905,7 @@ async def run(options) -> int:
         "summary": {summary["profile"]: summary for summary in summaries},
         "results": runs,
         "skipped": skipped,
+        "scoring": {"version": SCORING_VERSION},
     }
 
     if options.merge and RESULTS_FILE.exists():
@@ -912,6 +949,78 @@ def merged(previous: dict, current: dict) -> dict:
     return result
 
 
+#: Bumped whenever scoring changes, so a results file says how it was judged.
+SCORING_VERSION = 2
+
+
+class _Stored:
+    """A profile as a results file recorded it - enough to summarise it."""
+
+    def __init__(self, name: str, info: dict) -> None:
+        self.name = name
+        self._info = {key: value for key, value in info.items() if key != "measured_at"}
+
+    def as_dict(self) -> dict:
+        return dict(self._info)
+
+
+def rescore(document: dict, questions: list[Question]) -> dict:
+    """The same saved answers, judged again with the current rubric.
+
+    No model is called and no answer changes - only the verdicts and the
+    summary built from them. The measured times, tokens and memory are
+    carried over untouched.
+    """
+    by_id = {question.id: question for question in questions}
+    profiles = document.get("profiles", {})
+
+    for run in document["results"]:
+        question = by_id[run["question_id"]]
+
+        if run.get("error"):
+            run["correctness"] = score(question, "", "error")
+        else:
+            run["correctness"] = score(
+                question,
+                run.get("answer", ""),
+                run.get("rag_status", ""),
+                complete=run.get("done_reason") != "length",
+            )
+
+    document["summary"] = {
+        name: summarise(
+            _Stored(name, info), document["results"], (document["summary"].get(name) or {}).get("bench")
+        )
+        for name, info in profiles.items()
+    }
+    document["scoring"] = {
+        "version": SCORING_VERSION,
+        "rescored_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+
+    return document
+
+
+def run_rescore(options) -> int:
+    path = options.results
+    document = json.loads(path.read_text(encoding="utf-8"))
+    previous = document.get("scoring", {}).get("version", 1)
+    questions, _ = load_questions(options.questions)
+    backup = path.with_name(f"{path.stem}.scoring-v{previous}{path.suffix}")
+
+    if not backup.exists():
+        backup.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    document = rescore(document, questions)
+    text = table(list(document["summary"].values()))
+    print(f"\n{text}")
+    path.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.with_name("day29_summary.txt").write_text(text + "\n", encoding="utf-8")
+    print(f"\nRescored (scoring v{previous} -> v{SCORING_VERSION}): {path}\nPrevious verdicts kept in: {backup}")
+
+    return 0
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m app.evaluate_day29",
@@ -938,6 +1047,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--questions", type=Path, default=QUESTIONS_FILE)
     parser.add_argument("--merge", action="store_true", help="keep earlier profiles' results in the file")
     parser.add_argument("--verbose", action="store_true", help="also show the pipeline's own log lines")
+    parser.add_argument(
+        "--rescore",
+        action="store_true",
+        help="judge the answers already saved in the results file again - no model is called",
+    )
+    parser.add_argument("--results", type=Path, default=RESULTS_FILE)
 
     parsed = parser.parse_args(argv)
 
@@ -951,6 +1066,9 @@ def main() -> int:
     options = parse_args()
     logging.basicConfig(level=logging.INFO if options.verbose else logging.WARNING, format="%(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    if options.rescore:
+        return run_rescore(options)
 
     return asyncio.run(run(options))
 
