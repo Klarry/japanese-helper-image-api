@@ -141,3 +141,77 @@ def cited_prompt(question: str, chunks: Sequence[RetrievedChunk]) -> str:
         f"Instructions:\n{_SHARED}\n\n{_CITED_RULES}"
     )
 
+
+# --- Day 29: a prompt written for the local model ---------------------------
+#
+# The Day 24 prompt was written for Gemini, and Day 28 measured what it does
+# to a 4B local model: the facts usually survive, the format does not. On
+# three questions in ten the citations came back inside "answer" - as a
+# quoted sentence, as escaped JSON, once as the whole object - so validation
+# found nothing to check. Version 2 keeps the contract exactly (one JSON
+# object, numbered sources, the same "don't know" sentence, the same
+# validator afterwards) and changes how it is asked for: the role first, the
+# question right before the rules, numbered rules, a length limit, and the
+# output shape as the very last line. Nothing downstream knows which version
+# wrote the reply - which is the point: citation validation and the support
+# check judge both the same way.
+
+PROMPT_V1 = "v1-day24"
+PROMPT_V2 = "v2-day29"
+PROMPT_VERSIONS = (PROMPT_V1, PROMPT_V2)
+
+_ROLE_V2 = (
+    "You are a technical assistant for one software project: a FastAPI backend with an AI agent, "
+    "MCP servers, a layered agent memory, a RAG pipeline over the project's own files, and an "
+    "Android client. You answer questions about its code and architecture."
+)
+
+_RULES_V2 = (
+    "Rules:\n"
+    "1. Use ONLY the numbered extracts above. Add nothing from general knowledge.\n"
+    "2. Never invent a class, function, file, endpoint, setting or design decision. "
+    "Write every technical name exactly as the extracts spell it.\n"
+    "3. If the extracts do not contain the answer, the answer is exactly: "
+    f'"{DONT_KNOW}" - with an empty citations list. Do not guess.\n'
+    "4. Be brief and precise: at most four sentences of plain prose. No lists, no markdown.\n"
+    "5. Back each fact with a citation: the extract NUMBER, and a quote copied word for word "
+    "from that extract - one short phrase or sentence, under 25 words. "
+    "Never cite a number that is not above.\n"
+    '6. Citations go ONLY in the "citations" list. Never put quotes, [1] markers or JSON '
+    'inside "answer".\n'
+    "7. Answer in the language of the question.\n\n"
+    "Reply with one JSON object and nothing before or after it - no code fence:\n"
+    '{"answer": "...", "citations": [{"source": 1, "quote": "..."}]}'
+)
+
+
+def cited_prompt_v2(question: str, chunks: Sequence[RetrievedChunk]) -> str:
+    """The Day 29 prompt: same contract as ``cited_prompt``, asked for in the
+    order a small model follows best - who it is, what it has, what it was
+    asked, and last, the rules and the exact shape of the reply."""
+    if not chunks:
+        return cited_prompt(question, chunks)
+
+    return (
+        f"{_ROLE_V2}\n\n"
+        f"Extracts from the project's own documents:\n\n{numbered_context(chunks)}\n\n"
+        f"Question:\n{question}\n\n"
+        f"{_RULES_V2}"
+    )
+
+
+_CITED_PROMPTS = {PROMPT_V1: cited_prompt, PROMPT_V2: cited_prompt_v2}
+
+
+def cited_prompt_for(version: str, question: str, chunks: Sequence[RetrievedChunk]) -> str:
+    """The cited prompt of one version. An unknown version is refused rather
+    than quietly replaced - an evaluation that silently ran the wrong prompt
+    would measure nothing."""
+    try:
+        build = _CITED_PROMPTS[version]
+    except KeyError:
+        raise ValueError(
+            f"unknown prompt version: {version!r} (expected one of {', '.join(PROMPT_VERSIONS)})"
+        ) from None
+
+    return build(question, chunks)

@@ -77,10 +77,12 @@ async def rag_chat(request: RagChatRequest) -> RagChatResponse:
     final = len(enhanced.final) if enhanced else 0
 
     logger.info(
-        "[RAG] provider=%s · model=%s · retrieval=%dms · generation=%dms · total=%dms "
-        "· retrieved=%d · final=%d · status=%s",
+        "[RAG] provider=%s · model=%s · profile=%s · prompt=%s · retrieval=%dms · "
+        "generation=%dms · total=%dms · retrieved=%d · final=%d · status=%s",
         agent.provider_name,
         agent.model_name,
+        agent.profile_name or "-",
+        agent.prompt_version,
         _ms(answer.retrieval_seconds),
         _ms(answer.llm_seconds),
         _ms(total),

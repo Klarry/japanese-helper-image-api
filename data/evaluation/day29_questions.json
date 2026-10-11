@@ -1,0 +1,184 @@
+{
+  "about": "Day 29 control set: fourteen questions about this project's architecture, MCP orchestration, agent memory and RAG/citations, plus three it cannot answer. Every expected answer and every rubric fact was read out of the indexed files; nothing is invented. Rubric patterns are case-insensitive regular expressions - a fact counts when any one of its patterns matches the answer. For 'insufficient' questions the correct answer is a refusal (or an explicit 'it does not do that'), and any 'forbidden' match - a concrete number, schedule or name the documents do not contain - makes it wrong.",
+  "bench_question": 1,
+  "questions": [
+    {
+      "id": 1,
+      "category": "architecture",
+      "kind": "answer",
+      "question": "Which MCP servers does the project register, and what does each of them offer?",
+      "expected": "Four: japanese-data looks words up in the JLPT vocabulary API, processing turns findings into a summary without looking anything up, storage writes a result to a timestamped JSON file, and jlpt-vocab offers single-word lookups and the periodic digest.",
+      "expected_sources": ["app/services/mcp_registry.py", "README.md"],
+      "rubric": [
+        {"fact": "japanese-data", "any": ["japanese-data"]},
+        {"fact": "processing", "any": ["\\bprocessing\\b"]},
+        {"fact": "storage", "any": ["\\bstorage\\b"]},
+        {"fact": "jlpt-vocab", "any": ["jlpt-vocab"]},
+        {"fact": "processing summarises", "any": ["summar"]},
+        {"fact": "storage writes a JSON file", "any": ["json", "timestamp"]}
+      ]
+    },
+    {
+      "id": 2,
+      "category": "architecture",
+      "kind": "answer",
+      "question": "How does a message typed in the Android app end up running a tool in a separate process?",
+      "expected": "The app sends it to POST /agent/chat; the backend's ToolPlanner shows the model the tools the MCP servers listed and lets it decide whether a lookup is needed; the calls go through the MCP client to the server, which runs as its own process, and the result comes back as a TOOL RESULTS block. Nothing about MCP is on the device.",
+      "expected_sources": ["README.md", "app/services/japanese_learning_agent.py"],
+      "rubric": [
+        {"fact": "/agent/chat", "any": ["/agent/chat"]},
+        {"fact": "a planner decides", "any": ["toolplanner", "tool planner", "planner"]},
+        {"fact": "MCP client", "any": ["mcp client"]},
+        {"fact": "server in its own process", "any": ["subprocess", "separate process", "stdio", "mcp server", "the server"]}
+      ]
+    },
+    {
+      "id": 3,
+      "category": "mcp",
+      "kind": "answer",
+      "question": "What happens when one MCP server cannot be reached - does the agent lose all of its tools?",
+      "expected": "No. A server that cannot be reached takes only its own tools with it; the other servers' tools keep working, and the failure comes back as a failed call rather than an exception.",
+      "expected_sources": ["README.md", "app/services/mcp_registry.py"],
+      "rubric": [
+        {"fact": "no, not all tools", "any": ["\\bno\\b", "does not lose", "doesn't lose", "not lose"]},
+        {"fact": "only its own tools", "any": ["its own tools", "only (the )?tools (of|from) that server"]}
+      ]
+    },
+    {
+      "id": 4,
+      "category": "mcp",
+      "kind": "answer",
+      "question": "What does the orchestrator do when a stage of the chain returns a result the next stage cannot use?",
+      "expected": "It ends the run at that stage; the failure is named in the log and in the prompt block (it is one of the five things that end a run), and the later stages are not called.",
+      "expected_sources": ["README.md", "app/services/agent_pipeline.py"],
+      "rubric": [
+        {"fact": "the run ends", "any": ["\\b(end|ends|ended|stop|stops|stopped|halt|halts)\\b"]},
+        {"fact": "named in the log / prompt block", "any": ["\\blog", "prompt block", "\\bnamed\\b", "reported"]}
+      ]
+    },
+    {
+      "id": 5,
+      "category": "mcp",
+      "kind": "answer",
+      "question": "What exactly does the usable() check require of the search stage's output?",
+      "expected": "That the output is an object (a dict), that it has a 'matches' list, and that its 'query' is not empty.",
+      "expected_sources": ["app/services/agent_pipeline.py"],
+      "rubric": [
+        {"fact": "an object / dict", "any": ["\\bdict", "\\bobject\\b", "dictionary"]},
+        {"fact": "a matches list", "any": ["matches[^.]{0,60}list", "list[^.]{0,60}matches"]},
+        {"fact": "a non-empty query", "any": ["(non-?empty|not empty|empty)[^.]{0,60}query", "query[^.]{0,80}(non-?empty|not empty|empty|strip)"]}
+      ]
+    },
+    {
+      "id": 6,
+      "category": "memory",
+      "kind": "answer",
+      "question": "What are the three layers of the agent's memory, and what does each one hold?",
+      "expected": "Short-term: the current conversation, this session's messages. Working: the current task - its goals, requirements, constraints, the decisions already taken and the agreed terms. Long-term: what stays true about the learner across conversations - profile, preferences, decisions and knowledge.",
+      "expected_sources": ["app/services/agent_memory.py"],
+      "rubric": [
+        {"fact": "short-term", "any": ["short[- ]term"]},
+        {"fact": "working", "any": ["\\bworking\\b"]},
+        {"fact": "long-term", "any": ["long[- ]term"]},
+        {"fact": "short-term = the conversation", "any": ["conversation", "messages", "transcript"]},
+        {"fact": "working = the task", "any": ["\\btask", "goals", "requirements", "constraints"]},
+        {"fact": "long-term = the learner", "any": ["learner", "profile", "preferences", "knowledge"]}
+      ]
+    },
+    {
+      "id": 7,
+      "category": "memory",
+      "kind": "answer",
+      "question": "In what order are the memory layers put into a prompt, and what happens to a layer that is empty?",
+      "expected": "Long-term first, then working, then short-term - from the most durable to the most immediate. An empty layer is left out rather than sent as an empty heading, because it tells the model nothing and still costs tokens.",
+      "expected_sources": ["app/services/agent_memory.py"],
+      "rubric": [
+        {"fact": "long-term, working, short-term", "any": ["long[- ]term.{0,240}working.{0,240}short[- ]term"]},
+        {"fact": "empty layers are left out", "any": ["empty[^.]{0,120}(left out|omitted|skipped|not (sent|included)|excluded|dropped|leaves? out)", "(left out|omitted|skipped|not (sent|included)|excluded|dropped)[^.]{0,120}empty"]}
+      ]
+    },
+    {
+      "id": 8,
+      "category": "memory",
+      "kind": "answer",
+      "question": "What does the agent's long-term memory storage do when its file is missing, empty or broken?",
+      "expected": "It treats it as 'nothing remembered yet' and returns an empty LongTermMemory instead of raising (an unreadable file is logged as a warning), so a damaged file can never take the agent down.",
+      "expected_sources": ["app/services/agent_memory.py"],
+      "rubric": [
+        {"fact": "reads as nothing remembered / empty memory", "any": ["nothing remembered", "empty (long[- ]term )?memory", "longtermmemory\\(\\)", "returns? (an )?empty", "empty longtermmemory"]},
+        {"fact": "does not raise / cannot take the agent down", "any": ["rather than rais", "instead of rais", "(does not|doesn't|never|without|not) rais", "never take", "take the agent down", "not (crash|fail)", "fail[- ]safe"]}
+      ]
+    },
+    {
+      "id": 9,
+      "category": "rag",
+      "kind": "answer",
+      "question": "How is a chunk_id built, and what does one look like for a file in a subdirectory?",
+      "expected": "From a file slug: the file's parent directories and its stem joined with dashes (the extension dropped), so 'app/services/digest.py' becomes 'app-services-digest'; the chunk's position is appended to that, as in 'app-services-digest_12'.",
+      "expected_sources": ["app/services/chunking.py"],
+      "rubric": [
+        {"fact": "joined with dashes", "any": ["hyphen", "dash", "\"-\"", "'-'", "\\bjoin"]},
+        {"fact": "from the directories", "any": ["director", "folder", "parent", "\\bpath\\b"]},
+        {"fact": "the stem, extension dropped", "any": ["\\bstem\\b", "extension", "without (the )?\\.py", "\\bdrop"]},
+        {"fact": "app-services-digest", "any": ["app-services-digest"]}
+      ]
+    },
+    {
+      "id": 10,
+      "category": "rag",
+      "kind": "answer",
+      "question": "How does the backend make sure that a citation's quote really comes from a document and was not invented by the model?",
+      "expected": "The model only cites an extract number, which the backend maps back to the retrieved chunk; the quote must appear character for character inside that chunk's text (only runs of whitespace are collapsed); a citation that fails is dropped and logged rather than shown.",
+      "expected_sources": ["app/services/rag_citations.py"],
+      "rubric": [
+        {"fact": "cites by number", "any": ["number"]},
+        {"fact": "quote must appear exactly in the chunk", "any": ["character for character", "\\bexact", "verbatim", "word for word", "appear(s)? (in|inside|within)", "quote in chunk", "substring"]},
+        {"fact": "failing citations are dropped", "any": ["dropped", "\\bdrop", "reject", "discard", "thrown away", "removed", "not shown"]}
+      ]
+    },
+    {
+      "id": 11,
+      "category": "rag",
+      "kind": "answer",
+      "question": "Which model calls does the enhanced RAG pipeline make, and why does the selected provider have to be passed to all of them?",
+      "expected": "Three: the query rewrite (Day 23), the answer itself, and the claim-support check (Day 24). Swapping only the call that writes the answer would leave the rewrite and the support check talking to the cloud while the endpoint claimed to be local.",
+      "expected_sources": ["app/services/llm_provider.py"],
+      "rubric": [
+        {"fact": "query rewrite", "any": ["rewrit"]},
+        {"fact": "claim-support check", "any": ["claim[- ]support", "support check"]},
+        {"fact": "the answer", "any": ["\\banswer"]},
+        {"fact": "otherwise part stays in the cloud", "any": ["cloud", "gemini", "\\blocal\\b"]}
+      ]
+    },
+    {
+      "id": 12,
+      "category": "insufficient",
+      "kind": "insufficient",
+      "question": "Which relational database does the project use to store conversations, and what are its table names?",
+      "expected": "Not in the documents - the project uses no relational database; what it keeps is in JSON files. A correct answer says so instead of naming a database or tables.",
+      "expected_sources": [],
+      "accept": ["json", "no (relational )?database", "does not use", "doesn't use"],
+      "forbidden": ["postgres", "mysql", "sqlite", "mariadb", "oracle", "sql server", "tables? (named|called)"]
+    },
+    {
+      "id": 13,
+      "category": "insufficient",
+      "kind": "insufficient",
+      "question": "How many times does the MCP client retry starting a server that failed, and how long does it wait between attempts?",
+      "expected": "The documents describe no retries at all. A correct answer says the information is not there (or that no retry is described); any number of retries or any delay is invented.",
+      "expected_sources": [],
+      "accept": ["(no|not|doesn't|does not|never)[^.]{0,40}retr(y|ies)", "retr(y|ies)[^.]{0,40}\\b(not|no)\\b"],
+      "forbidden": ["\\b(\\d+|once|twice|two|three|four|five)\\s+(times|retries|attempts)\\b", "backoff", "retr(y|ies) (up to )?\\d+", "waits? (for )?\\d+"]
+    },
+    {
+      "id": 14,
+      "category": "insufficient",
+      "kind": "insufficient",
+      "question": "How often is the Gemini API key rotated, and where is the rotation schedule configured?",
+      "expected": "Nothing in the documents describes key rotation; the key is only read from the environment. A correct answer says the information is not available rather than giving a schedule.",
+      "expected_sources": [],
+      "accept": ["(no|not|doesn't|does not|never)[^.]{0,40}rotat"],
+      "forbidden": ["every\\s+\\d+", "\\d+\\s*(days?|hours?|weeks?|months?)", "\\b(monthly|weekly|daily|hourly|annually|quarterly)\\b", "\\bcron"]
+    }
+  ]
+}

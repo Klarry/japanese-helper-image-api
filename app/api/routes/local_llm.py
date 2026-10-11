@@ -36,6 +36,8 @@ _STATUS = {
     "model_not_installed": 503,
     "http_error": 502,
     "empty_response": 502,
+    # Day 29: the token cap ran out before an answer - a setting, not an outage.
+    "truncated": 502,
 }
 
 

@@ -99,7 +99,10 @@ def test_the_local_model_needs_no_cloud_key():
 #: layer. Day 28 made it the bridge on purpose: the RAG pipeline asks a
 #: provider for text, and the provider decides which model that is. Anything
 #: else importing the local service would be a day's decision nobody made.
-ALLOWED_IMPORTERS = {"llm_provider.py"}
+#: Day 29 made the second one: ``ollama_profiles`` names how the model is
+#: asked (it imports the options type and the configured model name) and
+#: still sends nothing itself - the provider remains the only caller.
+ALLOWED_IMPORTERS = {"llm_provider.py", "ollama_profiles.py"}
 
 
 def test_nothing_existing_was_rewired_through_the_local_model():

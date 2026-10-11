@@ -1141,6 +1141,99 @@ flattering mean out of the half it skipped.
 retriever, a recording provider, and `httpx.MockTransport` for the Ollama
 client.
 
+## Optimising the local model (Day 29)
+
+Day 28 measured what the local model costs on this job: about 118 s per
+answer against 15 s for Gemini, and on three questions in ten the citations
+came back inside the answer text instead of beside it. Day 29 adds the
+knobs and a way to measure what each one does - it does not declare a
+winner in code.
+
+### What was actually running
+
+Read from the code and from Ollama's own log, not assumed:
+
+| | Days 26-28 |
+|---|---|
+| Model | `OLLAMA_MODEL`, default `qwen3:4b` (in the Ollama library this tag shares its digest with `qwen3:4b-thinking-2507-q4_K_M`) |
+| Request | `{"model", "prompt", "stream": false}` - no `options`, no `think`, no `system` |
+| Temperature | not set - the model's default (the runner logged `temp = 0.600`, `top_k = 20`, `top_p = 0.950`) |
+| Max tokens | not set - Ollama's default, no limit (runs of 5 000+ tokens with repeated context shifts and `truncated = 1`) |
+| Context window | not set - the runner allocated `n_ctx_slot = 4096` |
+| Thinking | on - most of the generated tokens were reasoning, not answer |
+| Prompt | the Day 24 cited prompt (`rag_prompt.cited_prompt`), written for Gemini |
+
+### Profiles
+
+`app/services/ollama_profiles.py` names four ways of asking the model:
+
+| Profile | temperature | num_predict | num_ctx | think | prompt |
+|---|---|---|---|---|---|
+| `original` | default | default | default | default | v1 (Day 24) |
+| `baseline` | 0.7 | 1024 | 4096 | default | v1 |
+| `optimized-params` | 0.2 | 512 | 4096 | false | v1 |
+| `optimized` | 0.2 | 512 | 4096 | false | v2 (Day 29) |
+
+`original` sends exactly the Day 26 request, and it is still what runs:
+`OLLAMA_PROFILE` defaults to it. `OLLAMA_TEMPERATURE`, `OLLAMA_NUM_PREDICT`,
+`OLLAMA_NUM_CTX` and `OLLAMA_THINK` override one field of the active
+profile. Profiles apply to the RAG path (`/rag/chat` with `provider=ollama`);
+Gemini has no profile, and the Day 26-27 direct endpoints are unchanged.
+
+`num_predict` counts a thinking model's reasoning too, so a cap that is
+fine for an answer can be spent before the answer starts. When that
+happens the service now says so (`reason: "truncated"`) instead of
+reporting an empty response, and an unfinished `<think>` block is never
+shown as the answer.
+
+### The Day 29 prompt
+
+`rag_prompt.cited_prompt_v2` keeps the contract - numbered extracts, one
+JSON object, the same "I don't know based on the indexed documents"
+sentence, the same validator afterwards - and changes how it is asked for:
+role first, extracts, then the question, then numbered rules and the exact
+reply shape as the last line. It forbids invented classes, files and
+endpoints, asks for exact technical names, caps the answer at four
+sentences and the quote at 25 words, and says citations go only in the
+`citations` list. Citation validation and the support check judge it the
+same way as v1.
+
+### Evaluation
+
+```
+python -m app.evaluate_day29
+python -m app.evaluate_day29 --profiles optimized-params optimized --repeats 3
+python -m app.evaluate_day29 --variants qwen3:4b-instruct-2507-q4_K_M qwen3:4b-instruct-2507-q8_0 --profiles --merge
+```
+
+Fourteen questions in `data/evaluation/day29_questions.json` -
+architecture, MCP orchestration, agent memory, RAG and citations, and three
+the documents cannot answer - each with an expected answer and a rubric of
+facts. Retrieval runs once per question with the query rewrite off, before
+any profile, so every profile answers from the same chunks. Per run:
+answer, retrieved and cited chunk ids, citation validity (rechecked from
+outside the pipeline), rubric score, format leaks, names the context never
+mentioned, generation / support-check / total time, tokens and tokens per
+second as Ollama measured them, why generation stopped, errors.
+
+Speed is also benchmarked on one fixed prompt: the model is unloaded, the
+first request is reported as cold (with Ollama's `load_duration`), then
+`--repeats` warm requests give a median. Memory is read from `/api/ps`
+and sampled from the Ollama processes with `ps` while a request runs.
+Variants are only run if already installed - the script never downloads.
+
+Results: `data/evaluation/day29_results.json`, and the printed table in
+`data/evaluation/day29_summary.txt`.
+
+### Tests
+
+`tests/test_day29_optimization.py` - 35 tests: profile selection and
+environment overrides, the exact request body for each profile, Ollama's
+metrics, truncation, prompt selection, Ollama down under an optimised
+profile (503, no fallback), the relevance gate, citation validation with
+the new prompt, Gemini unchanged, the rubric, and the evaluation end to end
+against a stand-in Ollama.
+
 ## Layout
 
 ```
@@ -1159,6 +1252,7 @@ app/chat.py                   the mini chat: history, task memory, RAG per quest
 app/evaluate_chat.py          the two long scenarios, run and checked (Day 25)
 app/local_llm.py              ask the local model from a terminal (Day 26)
 app/evaluate_day28.py         the same ten questions through both providers (Day 28)
+app/evaluate_day29.py         local-model profiles compared on the same context (Day 29)
 data/documents/               the corpus that does not live in this repo (Android sources, PDFs)
 mcp_servers/                  MCP servers, each run as its own subprocess (japanese_learning: Day 16,
                               jlpt_vocab: Days 17-18, japanese_data + processing + storage: Days 19-20)

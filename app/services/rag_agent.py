@@ -31,7 +31,13 @@ from app.services import claim_support
 from app.services.gemini_service import TEXT_MODEL, GeneratedText, generate_text_with_usage
 from app.services.rag_citations import Source, validate
 from app.services.rag_enhanced import EnhancedRetrieval, EnhancedRetriever
-from app.services.rag_prompt import cited_prompt, plain_prompt, rag_prompt
+from app.services.rag_prompt import (
+    PROMPT_V1,
+    PROMPT_VERSIONS,
+    cited_prompt_for,
+    plain_prompt,
+    rag_prompt,
+)
 from app.services.rag_response import (
     ANSWERED,
     CitedAnswer,
@@ -135,6 +141,7 @@ class RagAgent:
         enhanced: EnhancedRetriever | None = None,
         check_support: bool = True,
         provider=None,
+        prompt_version: str | None = None,
     ) -> None:
         self._retriever = retriever or RAGRetriever()
         self._top_k = top_k
@@ -151,6 +158,17 @@ class RagAgent:
         #: Whether the support check may use a model. Off, it still runs -
         #: on words rather than meaning - and says which it was.
         self._check_support = check_support
+        #: Day 29. Which cited prompt ENHANCED hands the model. Asked for
+        #: explicitly, or else the one the provider's profile carries, or
+        #: else Day 24's - so Gemini and every older caller are unchanged.
+        chosen = prompt_version or getattr(provider, "prompt_version", None) or PROMPT_V1
+
+        if chosen not in PROMPT_VERSIONS:
+            raise ValueError(
+                f"unknown prompt version: {chosen!r} (expected one of {', '.join(PROMPT_VERSIONS)})"
+            )
+
+        self._prompt_version = chosen
 
     @property
     def retriever(self) -> RAGRetriever:
@@ -172,6 +190,17 @@ class RagAgent:
     @property
     def model_name(self) -> str:
         return getattr(self._provider, "model", TEXT_MODEL)
+
+    @property
+    def prompt_version(self) -> str:
+        return self._prompt_version
+
+    @property
+    def profile_name(self) -> str:
+        """The local profile in use, or "" for a provider that has none."""
+        profile = getattr(self._provider, "profile", None)
+
+        return getattr(profile, "name", "") if profile is not None else ""
 
     async def ask(
         self,
@@ -259,7 +288,7 @@ class RagAgent:
             relevance,
             threshold,
         )
-        prompt = cited_prompt(text, found.chunks)
+        prompt = cited_prompt_for(self._prompt_version, text, found.chunks)
         logger.info("Asking the model (mode=%s): %r", ENHANCED, text[:60])
         generated, llm_seconds = await self._generate(prompt)
 

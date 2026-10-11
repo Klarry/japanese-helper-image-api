@@ -22,7 +22,8 @@ import logging
 from dataclasses import dataclass
 from typing import Protocol
 
-from app.services import ollama_service
+from app.services import ollama_profiles, ollama_service
+from app.services.ollama_profiles import Profile
 from app.services.gemini_service import TEXT_MODEL, generate_text_with_usage
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,9 @@ class Generated:
     model: str
     input_tokens: int | None = None
     output_tokens: int | None = None
+    #: Day 29: what the provider measured about the run (Ollama only -
+    #: load, prompt and generation time, tokens per second, why it stopped).
+    meta: dict | None = None
 
     @property
     def tokens(self) -> int:
@@ -97,21 +101,37 @@ class GeminiProvider:
 class OllamaProvider:
     """The model on this machine, through the Day 26 service.
 
-    ``temperature`` is accepted and ignored. Day 26 fixed the request shape
-    at model/prompt/stream and a test pins it; the two places that pass a
-    temperature (the query rewrite and the support check) both fall back
-    safely on their own when the model wanders, so buying determinism here
-    would cost more than it is worth.
+    Day 29: how it is asked is a ``Profile`` - options and prompt version
+    together - and by default the one ``OLLAMA_PROFILE`` names, which is
+    ``original`` unless set: the request Days 26-28 sent, unchanged.
+
+    The per-call ``temperature`` is still accepted and ignored. The profile
+    decides the sampling for all three calls a RAG answer makes, so that a
+    profile measured in an evaluation is the profile that runs - not that
+    profile with a different temperature on two calls out of three.
     """
 
     name = OLLAMA
 
-    def __init__(self, model: str = "") -> None:
-        self.model = model or ollama_service.MODEL
+    def __init__(self, model: str = "", profile: Profile | None = None) -> None:
+        self.profile = profile or ollama_profiles.active_profile()
+        self.model = model or self.profile.model or ollama_service.MODEL
+
+    @property
+    def prompt_version(self) -> str:
+        """Which cited prompt this profile is meant to be handed."""
+        return self.profile.prompt_version
 
     async def generate(self, prompt: str, temperature: float | None = None) -> Generated:
+        options = self.profile.options
+
         try:
-            answer = await ollama_service.generate(prompt, model=self.model)
+            if options.is_default:
+                # Exactly the Day 26-28 call, so nothing about the original
+                # profile depends on the new parameter existing.
+                answer = await ollama_service.generate(prompt, model=self.model)
+            else:
+                answer = await ollama_service.generate(prompt, model=self.model, options=options)
         except ollama_service.OllamaUnavailable as error:
             raise ProviderUnavailable(OLLAMA, error.message, error.reason) from error
 
@@ -120,6 +140,7 @@ class OllamaProvider:
             model=answer.model,
             input_tokens=answer.prompt_tokens,
             output_tokens=answer.response_tokens,
+            meta=answer.metrics() if hasattr(answer, "metrics") else None,
         )
 
 

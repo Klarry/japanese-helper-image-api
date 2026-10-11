@@ -14,6 +14,8 @@ data/*
 !data/documents/
 !data/rag/
 !data/chat/
+# Day 29: the evaluation questions are versioned; results are not.
+!data/evaluation/
 # ...but the results of an evaluation run are output, not source.
 data/rag/evaluation_results.json
 data/rag/day23_results.json
@@ -21,3 +23,5 @@ data/rag/day24_results.json
 data/rag/day24_comparison.json
 data/chat/day25_results.json
 data/evaluation/day28_results.json
+data/evaluation/day29_results.json
+data/evaluation/day29_summary.txt
