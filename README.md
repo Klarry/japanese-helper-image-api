@@ -1177,8 +1177,8 @@ Read from the code and from Ollama's own log, not assumed:
 `original` sends exactly the Day 26 request, and it is still what runs:
 `OLLAMA_PROFILE` defaults to it. `OLLAMA_TEMPERATURE`, `OLLAMA_NUM_PREDICT`,
 `OLLAMA_NUM_CTX` and `OLLAMA_THINK` override one field of the active
-profile. Profiles apply to the RAG path (`/rag/chat` with `provider=ollama`);
-Gemini has no profile, and the Day 26-27 direct endpoints are unchanged.
+profile. Profiles apply to the RAG path (`/rag/chat` with `provider=ollama`)
+and, since Day 30, to `/local-chat`; Gemini has no profile.
 
 `num_predict` counts a thinking model's reasoning too, so a cap that is
 fine for an answer can be spent before the answer starts. When that
@@ -1234,6 +1234,21 @@ profile (503, no fallback), the relevance gate, citation validation with
 the new prompt, Gemini unchanged, the rubric, and the evaluation end to end
 against a stand-in Ollama.
 
+## A private service on the network (Day 30)
+
+`POST /local-chat` is now safe to share on a trusted network: a request id
+and measured timings on every answer, optional conversations (the Day 7
+history storage, one file each), and guards in front of the model - 10
+requests a minute per address (429 + `Retry-After`), 4000 characters (413),
+a token budget for the whole prompt (413), at most 2 generations at once
+(503 `busy`), a 120 s timeout. `GET /local-llm/health?strict=true` answers 503
+unless the model can actually answer. Start with `python -m app.serve`
+(0.0.0.0:8000, one worker); Ollama stays on loopback. Probe a running service
+with `python -m app.evaluate_day30 --base-url http://<lan-ip>:8000`.
+
+Everything else - configuration, LAN access, firewall, limits, security:
+[`docs/day30_private_service.md`](docs/day30_private_service.md).
+
 ## Layout
 
 ```
@@ -1253,6 +1268,8 @@ app/evaluate_chat.py          the two long scenarios, run and checked (Day 25)
 app/local_llm.py              ask the local model from a terminal (Day 26)
 app/evaluate_day28.py         the same ten questions through both providers (Day 28)
 app/evaluate_day29.py         local-model profiles compared on the same context (Day 29)
+app/serve.py                  start the backend on the network interface (Day 30)
+app/evaluate_day30.py         probe the running service over HTTP (Day 30)
 data/documents/               the corpus that does not live in this repo (Android sources, PDFs)
 mcp_servers/                  MCP servers, each run as its own subprocess (japanese_learning: Day 16,
                               jlpt_vocab: Days 17-18, japanese_data + processing + storage: Days 19-20)

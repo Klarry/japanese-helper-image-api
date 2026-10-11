@@ -102,7 +102,15 @@ def test_the_message_reaches_ollama_unchanged(monkeypatch):
     sent = json.loads(handler.seen[0].content)
 
     assert str(handler.seen[0].url) == "http://localhost:11434/api/generate"
-    assert sent == {"model": "qwen3:4b", "prompt": "Что такое MCP?", "stream": False}
+    # Day 30: the context window is now set explicitly - 4096, the size the
+    # server had been allocating anyway - instead of left to its default.
+    # The prompt is still the message, unchanged.
+    assert sent == {
+        "model": "qwen3:4b",
+        "prompt": "Что такое MCP?",
+        "stream": False,
+        "options": {"num_ctx": 4096},
+    }
 
 
 def test_the_device_sends_a_message_and_nothing_else():
@@ -110,7 +118,9 @@ def test_the_device_sends_a_message_and_nothing_else():
     client that could set them could also contradict them."""
     from app.schemas.local_llm import LocalChatRequest
 
-    assert set(LocalChatRequest.model_fields) == {"message"}
+    # Day 30 adds an optional conversation id - still nothing that names a
+    # model or a provider.
+    assert set(LocalChatRequest.model_fields) == {"message", "conversation_id"}
 
 
 def test_an_empty_message_is_refused_before_the_model_is_loaded():

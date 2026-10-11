@@ -6,7 +6,13 @@ prompt and returns an answer, and nothing about memory, retrieval or
 tools appears here.
 """
 
+import re
+
 from pydantic import BaseModel, field_validator
+
+#: Day 30. A conversation id becomes a file name, so it is held to the
+#: characters a file name can safely be built of - and nothing else.
+_CONVERSATION_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 class LocalLlmRequest(BaseModel):
@@ -45,6 +51,11 @@ class LocalLlmHealthResponse(BaseModel):
     model_installed: bool | None = None
     models: list[str] | None = None
     error: str | None = None
+    #: Day 30: both of the above at once - Ollama answers *and* has the
+    #: model. Not "FastAPI is running": that is true even when this is false.
+    ready: bool | None = None
+    #: Day 30: the limits the chat endpoint is enforcing right now.
+    service: dict | None = None
 
 
 class LocalChatRequest(BaseModel):
@@ -53,9 +64,27 @@ class LocalChatRequest(BaseModel):
     Named ``message`` rather than ``prompt`` because this is the chat the
     app talks to, not the Day 26 demo - and a device that could also set
     the model or the provider could also contradict them.
+
+    Day 30 adds ``conversation_id``, optional. Without it every message
+    stands alone, exactly as on Day 27; with it, earlier turns of that
+    conversation go into the prompt, as many as the context budget allows.
+    Its length is not limited here on purpose: an oversized message is
+    answered with 413 by the endpoint, not with a validation error.
     """
 
     message: str
+    conversation_id: str | None = None
+
+    @field_validator("conversation_id")
+    @classmethod
+    def conversation_id_must_be_a_safe_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+
+        if not _CONVERSATION_ID.match(value):
+            raise ValueError("conversation_id may only use letters, digits, '-' and '_' (1-64 characters)")
+
+        return value
 
     @field_validator("message")
     @classmethod
@@ -80,6 +109,16 @@ class LocalChatResponse(BaseModel):
     model: str
     provider: str
     seconds: float
+    #: Day 30. Everything below is additive: a client written for Day 27
+    #: reads the four fields above and is unaffected by the rest.
+    request_id: str = ""
+    conversation_id: str | None = None
+    #: Measured, in milliseconds: the model call, and the whole request.
+    timing: dict | None = None
+    #: What went into the prompt, and what the context budget allowed.
+    context: dict | None = None
+    #: What Ollama reported about the run - real counts, not estimates.
+    usage: dict | None = None
 
 
 class LocalChatUnavailable(BaseModel):
@@ -94,3 +133,10 @@ class LocalChatUnavailable(BaseModel):
     error: str
     reason: str
     detail: str
+    #: Day 30: the same failure shape now also covers the service's own
+    #: refusals (rate limit, size, capacity), so every one carries the id
+    #: that finds it in the log - and the provider, so no one wonders
+    #: whether some other model was tried instead.
+    provider: str = "ollama"
+    request_id: str = ""
+    retry_after: int | None = None

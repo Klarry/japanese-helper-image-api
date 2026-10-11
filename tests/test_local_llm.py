@@ -412,13 +412,16 @@ def test_the_health_endpoint_reports_a_working_model(monkeypatch):
 
     body = client.get("/local-llm/health").json()
 
-    assert body == {
+    # The Day 26 fields, unchanged. Day 30 adds ``ready`` and ``service``
+    # beside them; a client reading only these five is not affected.
+    assert {key: body[key] for key in ("available", "model", "model_installed", "models", "error")} == {
         "available": True,
         "model": "qwen3:4b",
         "model_installed": True,
         "models": ["qwen3:4b"],
         "error": None,
     }
+    assert body["ready"] is True
 
 
 # --- the CLI ---------------------------------------------------------------

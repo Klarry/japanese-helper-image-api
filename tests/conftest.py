@@ -9,3 +9,17 @@ so this runs early enough.
 import os
 
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _fresh_local_chat_guard():
+    """Day 30: the chat endpoint counts requests per address, in memory, for
+    the life of the process. Every test starts with fresh counters so one
+    test's requests never use up another's rate limit."""
+    from app.api.routes import local_llm
+
+    local_llm.reset_guard()
+    yield
