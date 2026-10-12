@@ -464,6 +464,7 @@ Response 200: `DevChatResponse`
 - `tools_used`: list[DevChatToolUse] (optional)
 - `timing`: object (optional)
 - `best_relevance`: number (optional)
+- `retrieval`: object | null (optional)
 
 ## /image-search
 
