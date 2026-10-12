@@ -155,6 +155,13 @@ def storage_server_parameters() -> StdioServerParameters:
     return module_server_parameters("mcp_servers.storage")
 
 
+def project_git_server_parameters() -> StdioServerParameters:
+    """Day 31: the project's own Git state, for the developer assistant.
+    Not part of the agent's chain - the Japanese-learning agent has no use
+    for a branch name - so it is registered here, not in mcp_registry."""
+    return module_server_parameters("mcp_servers.project_git")
+
+
 # Every server this project can start, by the name it answers to. The agent
 # reaches them through app/services/mcp_registry.py; this map is also what
 # the CLI below takes for --server.
@@ -164,6 +171,7 @@ SERVERS = {
     "japanese-data": japanese_data_server_parameters,
     "processing": processing_server_parameters,
     "storage": storage_server_parameters,
+    "project-git": project_git_server_parameters,
 }
 
 

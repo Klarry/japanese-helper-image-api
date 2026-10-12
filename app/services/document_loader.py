@@ -25,9 +25,15 @@ DOCUMENTS_DIR = PROJECT_ROOT / "data" / "documents"
 
 SUPPORTED_SUFFIXES = (".md", ".txt", ".py", ".kt", ".java", ".json", ".pdf")
 
-# Directories that are never worth indexing: build output, caches and the
-# index this pipeline writes.
-_SKIPPED_PARTS = frozenset({"__pycache__", ".git", ".venv", "build", "node_modules", "index"})
+# Directories that are never worth indexing: build output, caches, virtual
+# environments and the index this pipeline writes.
+_SKIPPED_PARTS = frozenset(
+    {"__pycache__", ".git", ".venv", ".venv-mac", "build", "node_modules", "index", ".pytest_cache"}
+)
+
+# Files that are never read, whatever root they turn up under (Day 31): an
+# environment file holds the API key, and a document index must not.
+_SKIPPED_NAMES = (".env",)
 
 
 class DocumentError(RuntimeError):
@@ -59,8 +65,14 @@ class CorpusRoot:
 
 # What gets indexed. Real project material, in the four groups it naturally
 # falls into; data/documents is last because it is the one anybody can add to.
+#
+# Day 31 adds ``docs``: the project's own Markdown documentation - the
+# architecture overview, the API reference generated from the OpenAPI
+# schema (python -m app.export_api_docs), and the per-day guides. Its own
+# source label, so an answer built on it says so.
 CORPUS: tuple[CorpusRoot, ...] = (
     CorpusRoot("project", "README.md"),
+    CorpusRoot("docs", "docs", (".md",)),
     CorpusRoot("backend", "app", (".py",)),
     CorpusRoot("mcp", "mcp_servers", (".py",)),
     CorpusRoot("documents", "data/documents"),
@@ -108,6 +120,7 @@ def _files_in(location: Path, suffixes: tuple[str, ...]) -> list[Path]:
         if path.is_file()
         and path.suffix in suffixes
         and not _SKIPPED_PARTS.intersection(path.parts)
+        and not path.name.startswith(_SKIPPED_NAMES)
     )
 
 

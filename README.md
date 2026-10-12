@@ -1249,6 +1249,28 @@ with `python -m app.evaluate_day30 --base-url http://<lan-ip>:8000`.
 Everything else - configuration, LAN access, firewall, limits, security:
 [`docs/day30_private_service.md`](docs/day30_private_service.md).
 
+## Developer assistant: /help (Day 31)
+
+`POST /dev/chat` (and `python -m app.dev_help "/help …"`) answers questions about
+this project:
+
+- documentation questions go through the RAG agent of Days 22-28, with sources
+  and validated citations;
+- "which branch?" goes to the `get_git_branch` tool of the new `project-git` MCP
+  server (`mcp_servers/project_git.py`), read from Git at call time;
+- a question that asks both uses both, and `/help` alone lists what it can do.
+
+`provider` is `gemini` or `ollama`; in local mode a model that is down is a 503,
+never a Gemini answer. `docs/` is now part of the index - `docs/architecture.md`,
+`docs/api.md` (generated: `python -m app.export_api_docs`) and the per-day guides -
+labelled `docs` in every source. After changing documentation, rebuild:
+
+```
+python -m app.export_api_docs
+python -m app.index_documents --strategy structural
+python -m app.evaluate_day31 --provider ollama
+```
+
 ## Layout
 
 ```
@@ -1270,8 +1292,13 @@ app/evaluate_day28.py         the same ten questions through both providers (Day
 app/evaluate_day29.py         local-model profiles compared on the same context (Day 29)
 app/serve.py                  start the backend on the network interface (Day 30)
 app/evaluate_day30.py         probe the running service over HTTP (Day 30)
+app/dev_help.py               the developer assistant from a terminal: /help (Day 31)
+app/export_api_docs.py        docs/api.md from the OpenAPI schema (Day 31)
+app/evaluate_day31.py         the /help demo requests, run and checked (Day 31)
+docs/                         architecture, API reference, guides - indexed for RAG (Day 31)
 data/documents/               the corpus that does not live in this repo (Android sources, PDFs)
 mcp_servers/                  MCP servers, each run as its own subprocess (japanese_learning: Day 16,
-                              jlpt_vocab: Days 17-18, japanese_data + processing + storage: Days 19-20)
+                              jlpt_vocab: Days 17-18, japanese_data + processing + storage: Days 19-20,
+                              project_git: Day 31)
 deploy/                       systemd unit
 ```

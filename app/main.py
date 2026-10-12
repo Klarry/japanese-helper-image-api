@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from app.api.routes import (
     agent,
     description,
+    dev_assistant,
     image_search,
     kanji_word_set,
     local_llm,
@@ -44,3 +45,4 @@ app.include_router(model_comparison.router)
 app.include_router(agent.router)
 app.include_router(local_llm.router)
 app.include_router(rag_chat.router)
+app.include_router(dev_assistant.router)
