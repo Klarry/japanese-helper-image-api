@@ -124,6 +124,14 @@ async def run(options) -> int:
 
         if options.only == ["unavailable"]:
             keep(await chat("unavailable", 1, QUESTIONS[0]))
+        elif health["status"] != 200:
+            # Nothing else would measure anything but "Ollama is down" - and
+            # every request would still spend the rate-limit quota.
+            reason = ((health.get("health") or {}).get("error") or "the model is not ready").splitlines()[0]
+            print(f"\nStopped: the service is up but the model is not ready ({reason}).")
+            print("Start Ollama (open the app, or `ollama serve`), check `ollama list`, and run this again.")
+            print("To record the 'Ollama is down' case on purpose, use --only unavailable.")
+            return 1
         else:
             keep(await chat("oversized", 1, "a" * (max_chars + 1)))
             keep(await chat("one", 1, QUESTIONS[0]))
