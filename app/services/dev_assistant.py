@@ -196,6 +196,8 @@ class DevAnswer:
     tools_used: list[dict] = field(default_factory=list)
     timing: dict = field(default_factory=dict)
     best_relevance: float = 0.0
+    #: How the documentation was searched - None when it was not.
+    retrieval: dict | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -211,7 +213,33 @@ class DevAnswer:
             "tools_used": self.tools_used,
             "timing": self.timing,
             "best_relevance": round(self.best_relevance, 4),
+            "retrieval": self.retrieval,
         }
+
+
+def retrieval_report(answer) -> dict | None:
+    """What the search did for one documentation question - enough to tell
+    "the index has nothing" from "the search query missed" without a log.
+    Numbers and the search query only; no chunk text."""
+    found, cited = answer.enhanced, answer.cited
+
+    if found is None:
+        return None
+
+    return {
+        "rewrite_used": found.query.used,
+        "search_query": found.query.query,
+        "retrieved": len(found.retrieval.chunks),
+        "kept": len(found.filtered.kept),
+        "best_similarity": round(found.best_similarity, 4),
+        "similarity_threshold": found.settings.similarity_threshold,
+        "retried_with_question": found.retried_with_question,
+        "rewrite_best_similarity": (
+            None if found.rewrite_best_similarity is None else round(found.rewrite_best_similarity, 4)
+        ),
+        "answer_threshold": found.settings.answer_threshold,
+        "rejected_citations": len(cited.rejected_citations) if cited else 0,
+    }
 
 
 class DevAssistant:
@@ -229,7 +257,14 @@ class DevAssistant:
         self._provider_name = provider_name
         self._agent = agent
         self._git_reader = git_reader
-        self._settings = settings or DEFAULT_SETTINGS.with_overrides(answer_threshold=ANSWER_THRESHOLD)
+        # Day 31, after the first real run: with Ollama writing the search
+        # query, the two broad questions kept nothing at the 0.70 filter while
+        # Gemini's rewrite of the same questions found docs/architecture.md.
+        # Only the rewrite depends on the provider, so a rewrite that keeps
+        # nothing is retried with the question itself - at the same 0.70.
+        self._settings = settings or DEFAULT_SETTINGS.with_overrides(
+            answer_threshold=ANSWER_THRESHOLD, retry_with_question=True
+        )
 
     def _rag_agent(self) -> RagAgent:
         if self._agent is None:
@@ -274,6 +309,7 @@ class DevAssistant:
             result.best_relevance = cited.best_relevance if cited else 0.0
             result.sources = [source.as_dict() for source in (cited.sources if cited else ())]
             result.citations = [citation.as_dict() for citation in (cited.citations if cited else ())]
+            result.retrieval = retrieval_report(answer)
             result.timing.update(
                 retrieval_ms=int(round(answer.retrieval_seconds * 1000)),
                 generation_ms=int(round(answer.llm_seconds * 1000)),

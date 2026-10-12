@@ -46,6 +46,16 @@ QUERY_REWRITE_ENABLED = os.getenv("RAG_QUERY_REWRITE_ENABLED", "true").strip().l
 # above, which decides which chunks are worth keeping; this one decides
 # whether what was kept is worth answering from.
 ANSWER_THRESHOLD = float(os.getenv("RAG_ANSWER_THRESHOLD", "0.70"))
+# Day 31. Whether a search whose rewritten query kept nothing is run once
+# more with the question's own words before the index is declared to have
+# nothing. Off by default, so every endpoint before Day 31 behaves exactly as
+# it was measured; the developer assistant turns it on.
+RETRY_WITH_QUESTION = os.getenv("RAG_RETRY_WITH_QUESTION", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 @dataclass(frozen=True)
@@ -60,6 +70,7 @@ class RagSettings:
     section_weight: float = SECTION_WEIGHT
     query_rewrite: bool = QUERY_REWRITE_ENABLED
     answer_threshold: float = ANSWER_THRESHOLD
+    retry_with_question: bool = RETRY_WITH_QUESTION
 
     def __post_init__(self) -> None:
         if self.retrieval_top_k < 1:
@@ -106,6 +117,7 @@ class RagSettings:
             "section_weight": self.section_weight,
             "query_rewrite": self.query_rewrite,
             "answer_threshold": self.answer_threshold,
+            "retry_with_question": self.retry_with_question,
         }
 
 

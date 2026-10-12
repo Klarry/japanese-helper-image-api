@@ -18,7 +18,11 @@ assistant:
   by traps for the whole run, so any fallback would fail loudly. (Query
   embeddings still use gemini-embedding-001: the index was built with it.)
 
-Results: data/evaluation/day31_results.json. Nothing is estimated.
+Results: data/evaluation/day31_results_<provider>.json - one file per
+provider, so a local run does not overwrite the Gemini one. Every
+documentation request also prints how it was searched: the search query,
+the best similarity against the filter, and whether the question itself had
+to be searched again. Nothing is estimated.
 """
 
 import argparse
@@ -30,13 +34,14 @@ import time
 from pathlib import Path
 
 from app.services import gemini_service
+from app.dev_help import retrieval_line
 from app.services.dev_assistant import DevAssistant
 from app.services.document_loader import PROJECT_ROOT
 from app.services.llm_provider import GEMINI, OLLAMA, PROVIDERS, ProviderUnavailable
 from app.services.rag_response import ANSWERED, INSUFFICIENT
 from app.services.rag_prompt import DONT_KNOW
 
-RESULTS_FILE = PROJECT_ROOT / "data" / "evaluation" / "day31_results.json"
+RESULTS_DIR = PROJECT_ROOT / "data" / "evaluation"
 RULE = "=" * 78
 
 REQUESTS = [
@@ -133,6 +138,8 @@ async def run(options) -> int:
             print(f"       answer: {first[:150]}")
             if result["sources"]:
                 print("       sources: " + ", ".join(f"{s['file']}#{s['chunk_id']}" for s in result["sources"][:4]))
+            if result.get("retrieval"):
+                print(f"       retrieval: {retrieval_line(result['retrieval'])}")
             for tool in result["tools_used"]:
                 print(f"       tool: {tool['name']} -> {json.dumps(tool['result']) if tool['ok'] else tool['error']}")
         else:
@@ -142,8 +149,9 @@ async def run(options) -> int:
 
     passed = sum(1 for record in records if record["passed"])
     print(f"{RULE}\n{passed}/{len(records)} requests passed their checks\n{RULE}")
-    RESULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    RESULTS_FILE.write_text(
+    results_file = RESULTS_DIR / f"day31_results_{options.provider}.json"
+    results_file.parent.mkdir(parents=True, exist_ok=True)
+    results_file.write_text(
         json.dumps(
             {
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -158,7 +166,7 @@ async def run(options) -> int:
         ),
         encoding="utf-8",
     )
-    print(f"Written: {RESULTS_FILE}")
+    print(f"Written: {results_file}")
 
     return 0 if passed == len(records) else 1
 

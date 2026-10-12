@@ -33,7 +33,10 @@ from app.services.dev_assistant import (
 from app.services.document_loader import CORPUS, PROJECT_ROOT, CorpusRoot, load_documents
 from app.services.embedding_service import EmbeddingService
 from app.services.llm_provider import OLLAMA, Generated, OllamaProvider
+from app.services.query_rewriter import MODEL, RewrittenQuery
 from app.services.rag_agent import RagAgent
+from app.services.rag_citations import validate
+from app.services.rag_enhanced import EnhancedRetriever
 from app.services.rag_prompt import DONT_KNOW
 from app.services.rag_response import ANSWERED, DISABLED, INSUFFICIENT
 from app.services.rag_retriever import RAGRetriever, Retrieval, RetrievedChunk
@@ -233,6 +236,131 @@ def test_an_invented_quote_does_not_become_a_citation():
     answer = asyncio.run(helper.ask("/help How does RAG work in this project?"))
 
     assert [citation["quote"] for citation in answer.citations] == [QUOTE]
+
+
+# --- after the first real run: the second search, and quotes without markup ---------------
+
+
+class SplitRetriever:
+    """The same chunk, scored by the query that found it: the rewrite misses,
+    the question's own words do not - what the first local run looked like."""
+
+    def __init__(self, question: str, rewrite_score: float = 0.55, question_score: float = 0.9) -> None:
+        self.question = question
+        self.rewrite_score = rewrite_score
+        self.question_score = question_score
+        self.queries: list[str] = []
+
+    async def retrieve(self, query, top_k=10):
+        self.queries.append(query)
+        score = self.question_score if query == self.question else self.rewrite_score
+        return Retrieval(
+            query=query, chunks=(chunk(score),), seconds=0.01, top_k=top_k,
+            strategy="structural", embedding_model="local-hashing",
+        )
+
+
+class FixedRewrite:
+    def __init__(self, query: str) -> None:
+        self.query = query
+
+    async def rewrite(self, question, enabled=None):
+        return RewrittenQuery(original=question, query=self.query, used=MODEL)
+
+
+QUESTION = "How does RAG work in this project?"
+REWRITE = "retrieval, embeddings, vector search"
+RETRY = DEFAULT_SETTINGS.with_overrides(query_rewrite=True, retry_with_question=True)
+
+
+def enhanced(retriever, settings):
+    return EnhancedRetriever(retriever=retriever, settings=settings, rewriter=FixedRewrite(REWRITE))
+
+
+def test_a_rewrite_that_keeps_nothing_is_searched_again_with_the_question():
+    retriever = SplitRetriever(QUESTION)
+    found = asyncio.run(enhanced(retriever, RETRY).retrieve(QUESTION))
+
+    assert retriever.queries == [REWRITE, QUESTION]
+    assert found.retried_with_question is True
+    assert found.rewrite_best_similarity == pytest.approx(0.55)
+    assert [item.chunk_id for item in found.chunks] == ["docs-architecture_7"]
+    assert found.as_dict()["retried_with_question"] is True
+
+
+def test_the_second_search_has_to_clear_the_same_threshold():
+    retriever = SplitRetriever(QUESTION, question_score=0.6)
+    found = asyncio.run(enhanced(retriever, RETRY).retrieve(QUESTION))
+
+    assert found.retried_with_question is True
+    assert found.nothing_relevant, "searching again must never lower the bar"
+
+
+def test_the_older_endpoints_do_not_search_twice():
+    assert DEFAULT_SETTINGS.retry_with_question is False
+    retriever = SplitRetriever(QUESTION)
+    found = asyncio.run(enhanced(retriever, RETRY.with_overrides(retry_with_question=False)).retrieve(QUESTION))
+
+    assert retriever.queries == [REWRITE]
+    assert found.nothing_relevant and found.retried_with_question is False
+
+
+def test_a_rewrite_that_found_something_is_not_searched_twice():
+    retriever = SplitRetriever(QUESTION, rewrite_score=0.8)
+    found = asyncio.run(enhanced(retriever, RETRY).retrieve(QUESTION))
+
+    assert retriever.queries == [REWRITE]
+    assert found.retried_with_question is False and found.chunks
+
+
+def test_the_assistant_searches_again_at_the_same_threshold_and_says_how_it_searched():
+    settings = DevAssistant(OLLAMA)._settings
+    assert settings.retry_with_question is True
+    assert settings.similarity_threshold == DEFAULT_SETTINGS.similarity_threshold
+
+    helper, *_ = assistant()
+    answer = asyncio.run(helper.ask("/help How does RAG work in this project?"))
+    report = answer.as_dict()["retrieval"]
+
+    assert (report["kept"], report["retrieved"], report["best_similarity"]) == (1, 1, 0.9)
+    assert report["rewrite_used"] == "off" and report["retried_with_question"] is False
+    assert asyncio.run(helper.ask("/help Which Git branch is currently active?")).retrieval is None
+
+
+ARCHITECTURE = (PROJECT_ROOT / "docs" / "architecture.md").read_text(encoding="utf-8")
+
+
+def doc_chunk(text: str) -> RetrievedChunk:
+    return RetrievedChunk(
+        chunk_id="docs-architecture_2", text=text, source="docs", file="docs/architecture.md",
+        title="Architecture", section="Architecture > Models and providers",
+        strategy="structural", position=2, score=0.9,
+    )
+
+
+def test_a_quote_without_the_docs_backticks_is_still_a_quote():
+    # The quote the local model gave in the first real run, rejected then.
+    quote = "app/services/ollama_service.py is the only client for the local model."
+    checked = validate(cited(quote), [doc_chunk(ARCHITECTURE)])
+
+    assert checked.rejected == ()
+    assert checked.citations[0].quote == "`app/services/ollama_service.py` is the only client for the local model."
+    assert checked.citations[0].quote in ARCHITECTURE
+
+
+def test_markup_is_forgiven_but_a_changed_word_is_not():
+    quote = "app/services/ollama_service.py is the main client for the local model."
+    checked = validate(cited(quote), [doc_chunk(ARCHITECTURE)])
+
+    assert checked.citations == ()
+    assert checked.rejected[0].reason.startswith("quote is not a fragment")
+
+
+def test_the_kept_quote_is_cut_from_the_chunk_not_from_the_reply():
+    text = "- **Providers.** `provider_for(name)` refuses an unknown name."
+    checked = validate(cited("Providers. provider_for(name) refuses an unknown name."), [doc_chunk(text)])
+
+    assert checked.citations[0].quote == "**Providers.** `provider_for(name)` refuses an unknown name."
 
 
 # --- the git tool itself (a real git, in temporary repositories) ---------------------------

@@ -54,7 +54,7 @@ The first four make up the agent's registry. `project-git` is registered with th
   3. Similarity filter and rerank (`rag_enhanced.py`, `reranker.py`).
   4. Relevance gate. Below the threshold the answer is "I don't know" and no model is called.
   5. Cited prompt (`rag_prompt.py`).
-  6. Citation validation (`rag_citations.py`): every quote must appear verbatim in the chunk it cites, otherwise it is dropped.
+  6. Citation validation (`rag_citations.py`): every quote must appear verbatim in the chunk it cites, otherwise it is dropped. Only whitespace and Markdown inline markup (backticks, asterisks) are ignored; the kept quote is the chunk's own text.
   7. Claim-support check (`claim_support.py`).
 - **Endpoints.** `POST /rag/chat` takes `provider: gemini | ollama` and passes it to all three model calls.
 
@@ -73,7 +73,7 @@ The first four make up the agent's registry. `project-git` is registered with th
 
 `app/services/dev_assistant.py` answers `/help` commands:
 
-- Questions about the documentation go through the RAG agent above, with sources.
+- Questions about the documentation go through the RAG agent above, with sources. If the rewritten search query keeps nothing at the similarity filter, the question itself is searched once more against the same threshold (`retry_with_question`).
 - Questions about the current branch go to the `get_git_branch` MCP tool.
 - A combined question uses both.
 - `/help` alone lists what the assistant can do.

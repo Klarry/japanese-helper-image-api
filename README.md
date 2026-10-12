@@ -1271,6 +1271,12 @@ python -m app.index_documents --strategy structural
 python -m app.evaluate_day31 --provider ollama
 ```
 
+Results go to `data/evaluation/day31_results_<provider>.json`. Every documentation
+answer reports how it was searched (`retrieval`: search query, best similarity
+against the 0.70 filter, chunks kept). If the rewritten query keeps nothing, `/help`
+searches once more with the question itself, at the same threshold. Citation
+checks ignore whitespace and Markdown backticks/asterisks, and nothing else.
+
 ## Layout
 
 ```

@@ -13,10 +13,14 @@ that can be checked:
   ``quote in chunk.text`` is the whole test, and a citation that fails it is
   dropped and logged rather than shown.
 
-Whitespace is the one liberty taken: a model that reflows a line break into
-a space has not invented anything, so both sides are compared with runs of
-whitespace collapsed. Nothing else is normalised - not case, not
-punctuation, not a word.
+Whitespace is one liberty taken: a model that reflows a line break into a
+space has not invented anything, so both sides are compared with runs of
+whitespace collapsed. Day 31 adds the second, for the same reason: Markdown's
+inline markup - the backticks around `code`, the asterisks of **bold** - is
+how a document is rendered, not what it says, and a quote that leaves it out
+has not changed a word. Nothing else is normalised - not case, not
+punctuation, not a word. And the quote that is kept is the chunk's own text,
+markup and all, never the model's rendering of it.
 """
 
 import json
@@ -37,6 +41,8 @@ MAX_QUOTE_SENTENCES = 3
 MIN_QUOTE_CHARS = 12
 
 _WHITESPACE = re.compile(r"\s+")
+#: Day 31: Markdown inline markup, ignored when a quote is compared.
+_MARKUP = frozenset("`*")
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 # [1], [2] ... as the prompt numbers them, with or without a leading "Source".
 _MARKER = re.compile(r"\[(?:source\s*)?(\d{1,2})\]", re.IGNORECASE)
@@ -46,6 +52,64 @@ def flatten(text: str) -> str:
     """The comparable form of a piece of text: runs of whitespace collapsed,
     ends trimmed. Used on both sides of every quote check."""
     return _WHITESPACE.sub(" ", text).strip()
+
+
+def _comparable(text: str) -> tuple[str, list[int]]:
+    """``text`` without inline markup and with whitespace runs collapsed - and,
+    for every character kept, where it stood in ``text``."""
+    kept: list[str] = []
+    where: list[int] = []
+
+    for index, char in enumerate(text):
+        if char in _MARKUP:
+            continue
+
+        if char.isspace():
+            if not kept or kept[-1] == " ":
+                continue
+
+            char = " "
+
+        kept.append(char)
+        where.append(index)
+
+    while kept and kept[-1] == " ":
+        kept.pop()
+        where.pop()
+
+    return "".join(kept), where
+
+
+def locate(quote: str, text: str) -> str | None:
+    """The fragment of ``text`` that ``quote`` reproduces, as ``text`` has it.
+
+    Exact except for whitespace and Markdown's inline markup: every word and
+    every other character has to match. None when the quote is not in the
+    text. What comes back is cut from ``text`` itself - widened over markup
+    that touches its ends, so a code span is not returned half-open - which
+    is why a kept citation is always a fragment of its chunk, character for
+    character.
+    """
+    needle, _ = _comparable(quote)
+
+    if not needle:
+        return None
+
+    haystack, where = _comparable(text)
+    found = haystack.find(needle)
+
+    if found == -1:
+        return None
+
+    start, end = where[found], where[found + len(needle) - 1] + 1
+
+    while start > 0 and text[start - 1] in _MARKUP:
+        start -= 1
+
+    while end < len(text) and text[end] in _MARKUP:
+        end += 1
+
+    return flatten(text[start:end])
 
 
 def shorten(quote: str, max_sentences: int = MAX_QUOTE_SENTENCES) -> str:
@@ -244,11 +308,15 @@ def validate(reply: str, chunks: Sequence[RetrievedChunk]) -> Validated:
             rejected.append(RejectedCitation("quote too short to be evidence", chunk.chunk_id, quote))
             continue
 
-        if flatten(quote) not in flatten(chunk.text):
+        located = locate(quote, chunk.text)
+
+        if located is None:
             rejected.append(
                 RejectedCitation("quote is not a fragment of the cited chunk", chunk.chunk_id, quote)
             )
             continue
+
+        quote = located
 
         if any(existing.chunk_id == chunk.chunk_id and existing.quote == quote for existing in citations):
             continue

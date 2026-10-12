@@ -52,6 +52,10 @@ class DevChatResponse(BaseModel):
     tools_used: list[DevChatToolUse] = Field(default_factory=list)
     timing: dict = Field(default_factory=dict)
     best_relevance: float = 0.0
+    #: How the documentation was searched (search query, best similarity
+    #: against the filter, whether the question itself was searched again).
+    #: Null when no documentation was needed.
+    retrieval: dict | None = None
 
 
 class DevChatError(BaseModel):

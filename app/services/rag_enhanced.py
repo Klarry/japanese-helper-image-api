@@ -16,6 +16,10 @@ first stage. What this module adds is what happens to its result afterwards,
 and a record of it detailed enough to argue with - every chunk that was
 dropped, with its score, and every chunk that survived, with the three
 numbers that decided its place.
+
+Day 31 adds one optional step (``retry_with_question``): when the rewritten
+query keeps nothing, the question itself is searched once more, against the
+same threshold, before the answer becomes "not in the documents".
 """
 
 import logging
@@ -42,6 +46,11 @@ class EnhancedRetrieval:
     final: tuple[RerankedChunk, ...]
     settings: RagSettings = field(default=DEFAULT_SETTINGS)
     seconds: float = 0.0
+    #: Day 31. True when the rewritten query kept nothing and the search was
+    #: run again with the question itself; ``retrieval`` and ``filtered`` are
+    #: then that second search, and this is the best the rewrite reached.
+    retried_with_question: bool = False
+    rewrite_best_similarity: float | None = None
 
     @property
     def chunks(self) -> list:
@@ -111,6 +120,10 @@ class EnhancedRetrieval:
             "reordered": self.reranked.reordered,
             "best_relevance": round(self.best_relevance, 4),
             "best_similarity": round(self.best_similarity, 4),
+            "retried_with_question": self.retried_with_question,
+            "rewrite_best_similarity": (
+                None if self.rewrite_best_similarity is None else round(self.rewrite_best_similarity, 4)
+            ),
             "answer_threshold": self.settings.answer_threshold,
             "latency": {
                 "rewrite_seconds": round(self.query.seconds, 3),
@@ -172,6 +185,26 @@ class EnhancedRetriever:
             rewritten.query, top_k=active.retrieval_top_k
         )
         filtered = self._filter.apply(retrieval.chunks, threshold=active.similarity_threshold)
+        retried, rewrite_best = False, None
+
+        if active.retry_with_question and not filtered.kept and rewritten.query != text:
+            # Day 31. The rewrite is a guess about what to search for, and a
+            # small local model can guess badly - a list of synonyms whose
+            # vector sits nowhere near the documentation. Its search keeping
+            # nothing says the guess missed, not yet that the index has
+            # nothing; the question's own words are the one other query
+            # that needs no guessing. Same index, same threshold: this can
+            # only find what clears the bar, never lower it.
+            rewrite_best = max((chunk.score for chunk in retrieval.chunks), default=0.0)
+            retrieval = await self._retriever.retrieve(text, top_k=active.retrieval_top_k)
+            filtered = self._filter.apply(retrieval.chunks, threshold=active.similarity_threshold)
+            retried = True
+            logger.info(
+                "[Retrieval] Rewrite kept nothing (best %.3f) · searched again with the question · Remaining: %d",
+                rewrite_best,
+                len(filtered.kept),
+            )
+
         # Reranking reads the question's own words, not the rewrite's: the
         # rewrite may have added terms the person never used, and a chunk
         # should not be promoted for matching a guess.
@@ -197,4 +230,6 @@ class EnhancedRetriever:
             final=final,
             settings=active,
             seconds=seconds,
+            retried_with_question=retried,
+            rewrite_best_similarity=rewrite_best,
         )

@@ -18,6 +18,31 @@ from app.services.dev_assistant import DevAssistant, NotAHelpCommand
 from app.services.llm_provider import GEMINI, PROVIDERS, ProviderUnavailable
 
 
+def retrieval_line(retrieval: dict | None) -> str:
+    """One line on how the documentation was searched, or "" if it was not."""
+    if not retrieval:
+        return ""
+
+    query = f"{retrieval['rewrite_used']} \"{retrieval['search_query'][:70]}\""
+    found = (
+        f"best similarity {retrieval['best_similarity']:.3f} (filter {retrieval['similarity_threshold']:.2f}) · "
+        f"kept {retrieval['kept']}/{retrieval['retrieved']}"
+    )
+
+    if retrieval["retried_with_question"]:
+        line = (
+            f"search={query} kept nothing (best {retrieval['rewrite_best_similarity']:.3f}) "
+            f"-> searched again with the question: {found}"
+        )
+    else:
+        line = f"search={query} · {found}"
+
+    if retrieval["rejected_citations"]:
+        line += f" · {retrieval['rejected_citations']} citation(s) rejected"
+
+    return line
+
+
 def show(result: dict) -> None:
     print(f"\n{result['answer']}\n")
 
@@ -30,6 +55,9 @@ def show(result: dict) -> None:
         print("Citations:")
         for citation in result["citations"]:
             print(f"  - [{citation['chunk_id']}] \"{citation['quote'][:110]}\"")
+
+    if result.get("retrieval"):
+        print(f"Retrieval: {retrieval_line(result['retrieval'])}")
 
     for tool in result["tools_used"]:
         state = json.dumps(tool["result"], ensure_ascii=False) if tool["ok"] else f"failed: {tool['error']}"
