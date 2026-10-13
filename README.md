@@ -1277,6 +1277,31 @@ against the 0.70 filter, chunks kept). If the rewritten query keeps nothing, `/h
 searches once more with the question itself, at the same threshold. Citation
 checks ignore whitespace and Markdown backticks/asterisks, and nothing else.
 
+## AI code review of pull requests (Day 32)
+
+Every pull request gets one review comment, written by the local model with the project index as context.
+The comment is updated in place on each push.
+
+- `.github/workflows/ai-code-review.yml` runs on a self-hosted runner on the Mac that runs the backend.
+  It checks out the base branch only and runs `python3 -m app.github_review`.
+- `app/github_review.py` reads the PR and its diff through the GitHub API, calls the backend and publishes the
+  comment. It uses only the standard library.
+- `POST /code-review` (`app/services/code_review.py`) takes the diff and does the rest:
+  - context: exact matches of the changed code in the index, plus a vector search through the Day 23 filter and
+    reranker;
+  - the review: a dedicated prompt, run on Ollama (optimized profile, JSON output) or Gemini;
+  - validation: every finding needs a known category and severity, a changed file, evidence that is in the diff
+    and a line that the diff shows.
+- With provider `ollama` nothing is sent to a cloud model; vector-search queries are only the PR title, file
+  paths and identifier names. A down model is a 503, never a Gemini review.
+
+```
+git diff main...HEAD | .venv-mac/bin/python -m app.review_diff         # a manual review of a local branch
+.venv-mac/bin/python -m app.evaluate_day32                              # five synthetic PRs, scored
+```
+
+Set-up, permissions, API and limitations: `docs/code_review.md`.
+
 ## Layout
 
 ```
@@ -1301,6 +1326,10 @@ app/evaluate_day30.py         probe the running service over HTTP (Day 30)
 app/dev_help.py               the developer assistant from a terminal: /help (Day 31)
 app/export_api_docs.py        docs/api.md from the OpenAPI schema (Day 31)
 app/evaluate_day31.py         the /help demo requests, run and checked (Day 31)
+app/github_review.py          GitHub side of the AI code review: read PR, call backend, comment (Day 32)
+app/review_diff.py            a manual code review of a local diff (Day 32)
+app/evaluate_day32.py         the code review on five synthetic PRs, scored (Day 32)
+.github/workflows/            ai-code-review.yml - the PR review job (Day 32)
 docs/                         architecture, API reference, guides - indexed for RAG (Day 31)
 data/documents/               the corpus that does not live in this repo (Android sources, PDFs)
 mcp_servers/                  MCP servers, each run as its own subprocess (japanese_learning: Day 16,

@@ -80,6 +80,9 @@ class OllamaOptions:
     num_predict: int | None = None
     num_ctx: int | None = None
     think: bool | None = None
+    #: Day 32: "json" asks Ollama to constrain the reply to one JSON value -
+    #: a top-level request field, like ``think``. Only the code review sets it.
+    format: str | None = None
 
     def __post_init__(self) -> None:
         if self.temperature is not None and not 0.0 <= self.temperature <= 2.0:
@@ -90,6 +93,9 @@ class OllamaOptions:
 
         if self.num_ctx is not None and self.num_ctx < 256:
             raise ValueError("num_ctx must be at least 256 tokens")
+
+        if self.format not in (None, "json"):
+            raise ValueError('format is either unset or "json"')
 
     @property
     def is_default(self) -> bool:
@@ -114,6 +120,9 @@ class OllamaOptions:
 
         if self.think is not None:
             fields["think"] = self.think
+
+        if self.format is not None:
+            fields["format"] = self.format
 
         return fields
 

@@ -3,7 +3,7 @@
 Generated from the FastAPI app's OpenAPI schema by `python -m app.export_api_docs`.
 Do not edit by hand - change the code and regenerate.
 
-40 endpoints. Interactive version: `/docs` on a running server.
+41 endpoints. Interactive version: `/docs` on a running server.
 
 ## /agent
 
@@ -427,6 +427,41 @@ Token usage of every recorded chat request, tagged with the strategy that produc
 
 Response 200: `AgentUsageResponse`
 - `entries`: list[AgentUsageEntry] (required)
+
+## /code-review
+
+### POST /code-review
+
+Review a pull request's diff with RAG context from the project index. Returns validated findings (bugs, security, architecture, tests, ...), notes, recommendations and the limitations of the review.
+
+Request body: `CodeReviewRequest`
+- `repository`: string (required)
+- `pull_request_number`: integer (required)
+- `base_branch`: string (required)
+- `head_branch`: string (required)
+- `title`: string (optional)
+- `diff`: string (required)
+- `changed_files`: list[ChangedFile] (optional)
+- `provider`: string (optional)
+
+Response 200: `CodeReviewResponse`
+- `request_id`: string (required)
+- `repository`: string (required)
+- `pull_request_number`: integer (required)
+- `base_branch`: string (required)
+- `head_branch`: string (required)
+- `summary`: string (required)
+- `findings`: list[CodeReviewFinding] (required)
+- `architecture_notes`: list[string] (optional)
+- `recommendations`: list[string] (optional)
+- `limitations`: list[string] (optional)
+- `provider`: string (required)
+- `model`: string (required)
+- `files`: list[object] (optional)
+- `context`: object (optional)
+- `validation`: object (optional)
+- `generation`: object (optional)
+- `timing`: object (optional)
 
 ## /description
 

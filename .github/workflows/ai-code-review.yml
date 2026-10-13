@@ -1,0 +1,53 @@
+# Day 32: an AI review of every pull request, posted as one PR comment.
+#
+# The job runs on a self-hosted runner on the machine where the backend and
+# Ollama run, so the diff goes to 127.0.0.1 and - with provider ollama -
+# never leaves that machine. Set-up: docs/code_review.md.
+#
+# Safety, in the order it matters:
+# - pull_request_target: the workflow definition comes from the base branch,
+#   so a pull request cannot rewrite what runs on the runner;
+# - the checkout is the base commit, never the pull request's head: the PR is
+#   only ever read as a diff, through the API, and none of its code runs;
+# - only pull requests from branches of this repository - a fork's PR would
+#   make this machine spend its model on a stranger's diff;
+# - the token can read the code and comment on pull requests, nothing else;
+#   the review never approves, requests changes or merges.
+
+name: AI code review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# One run per pull request at a time; a newer push waits for the running
+# review instead of abandoning it halfway (the backend would finish it anyway).
+concurrency:
+  group: ai-code-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !github.event.pull_request.draft
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 20
+    steps:
+      - name: Check out the base branch (trusted code only)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Review the pull request and comment
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CODE_REVIEW_URL: ${{ vars.CODE_REVIEW_URL || 'http://127.0.0.1:8000' }}
+          CODE_REVIEW_PROVIDER: ${{ vars.CODE_REVIEW_PROVIDER || 'ollama' }}
+          CODE_REVIEW_TOKEN: ${{ secrets.CODE_REVIEW_TOKEN }}
+        run: python3 -m app.github_review

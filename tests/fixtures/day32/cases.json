@@ -1,0 +1,78 @@
+{
+  "about": "Day 32 evaluation cases. Each diff is a synthetic change built against the real files with difflib (3 lines of context, as GitHub shows) - none of them is applied to the project. 'expected' is the rubric: a finding matches an expectation when it names the same file, one of the listed categories, and at least one keyword appears in its title, description or recommendation. A finding that matches nothing is 'unexpected'; it counts as a false positive when its severity is critical, high or medium.",
+  "cases": [
+    {
+      "id": "bug_slot_leak",
+      "goal": "intentional potential bug",
+      "title": "Free the generation slot after the model answers",
+      "head_branch": "demo/slot-release",
+      "diff": "bug_slot_leak.diff",
+      "expected": [
+        {
+          "label": "the slot (and the conversation lock) is no longer released when generation times out or Ollama is unavailable - both except branches return before leave()",
+          "file": "app/api/routes/local_llm.py",
+          "categories": ["bug", "performance", "maintainability"],
+          "keywords": ["finally", "leak", "release", "leave", "slot", "timeout", "exception", "early return"]
+        }
+      ],
+      "context_files": ["app/api/routes/local_llm.py", "app/services/local_chat_guard.py", "docs/architecture.md", "docs/day30_private_service.md"]
+    },
+    {
+      "id": "convention_cloud_fallback",
+      "goal": "violates an existing project convention",
+      "title": "Keep answering when the local model is down",
+      "head_branch": "demo/ollama-fallback",
+      "diff": "convention_cloud_fallback.diff",
+      "expected": [
+        {
+          "label": "silent fallback from Ollama to Gemini - the project never falls back between providers, and local mode must not send data to the cloud",
+          "file": "app/services/llm_provider.py",
+          "categories": ["architecture", "security", "bug"],
+          "keywords": ["fallback", "fall back", "falls back", "gemini", "cloud", "silent", "provider"]
+        }
+      ],
+      "context_files": ["app/services/llm_provider.py", "docs/architecture.md", "README.md"]
+    },
+    {
+      "id": "correct_gate_validation",
+      "goal": "straightforward, correct change",
+      "title": "Refuse a concurrency gate without slots",
+      "head_branch": "demo/gate-validation",
+      "diff": "correct_gate_validation.diff",
+      "expected": [],
+      "context_files": ["app/services/local_chat_guard.py"]
+    },
+    {
+      "id": "missing_tests_retry_after",
+      "goal": "should trigger a missing-tests recommendation",
+      "title": "Parse Retry-After headers",
+      "head_branch": "demo/retry-after",
+      "diff": "missing_tests_retry_after.diff",
+      "expected": [
+        {
+          "label": "new parsing logic (two formats, error path, clock) with no tests",
+          "file": "app/services/local_chat_guard.py",
+          "categories": ["testing"],
+          "keywords": ["test"]
+        }
+      ],
+      "context_files": ["app/services/local_chat_guard.py", "tests/test_day30_service.py"]
+    },
+    {
+      "id": "docs_architecture_git_shell",
+      "goal": "relevant architecture is described in the documentation",
+      "title": "Let the developer assistant run git commands",
+      "head_branch": "demo/git-commands",
+      "diff": "docs_architecture_git_shell.diff",
+      "expected": [
+        {
+          "label": "shell=True with a caller-supplied string: command injection and arbitrary commands, against the documented design of project-git (fixed repository, no arguments, no shell)",
+          "file": "mcp_servers/project_git.py",
+          "categories": ["security", "architecture"],
+          "keywords": ["shell", "inject", "arbitrary", "command"]
+        }
+      ],
+      "context_files": ["mcp_servers/project_git.py", "docs/architecture.md", "README.md"]
+    }
+  ]
+}

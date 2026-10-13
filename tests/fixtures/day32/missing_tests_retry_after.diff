@@ -1,0 +1,39 @@
+diff --git a/app/services/local_chat_guard.py b/app/services/local_chat_guard.py
+--- a/app/services/local_chat_guard.py
++++ b/app/services/local_chat_guard.py
+@@ -22,6 +22,7 @@
+ reach one, and says why not when it may not.
+ """
+ 
++import email.utils
+ import math
+ import os
+ import re
+@@ -214,6 +215,27 @@
+             del self._seen[key]
+ 
+ 
++def parse_retry_after(value: str | None, now: float | None = None) -> int | None:
++    """Seconds to wait, from a Retry-After header: either delta-seconds or
++    an HTTP date. None when the header is missing or cannot be read."""
++    if not value:
++        return None
++
++    text = value.strip()
++
++    if text.isdigit():
++        return int(text)
++
++    try:
++        moment = email.utils.parsedate_to_datetime(text)
++    except (TypeError, ValueError):
++        return None
++
++    current = now if now is not None else time.time()
++
++    return max(0, math.ceil(moment.timestamp() - current))
++
++
+ # --- how many at once -----------------------------------------------------------------
+ 
+ 

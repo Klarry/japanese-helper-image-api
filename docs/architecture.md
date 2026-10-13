@@ -80,6 +80,16 @@ The first four make up the agent's registry. `project-git` is registered with th
 
 The CLI is `python -m app.dev_help "/help …"`.
 
+## Code review (`/code-review`, Day 32)
+
+`app/services/code_review.py` reviews a pull request's unified diff. It parses the diff into files and numbered
+lines (`code_review_diff.py`) and adds context from the index, then asks the provider for a JSON review. The
+context has two parts: chunks of the changed files that contain lines of the diff (exact text) and a vector search
+through the RAG pipeline above with the query rewrite turned off. Findings are validated against the diff:
+category, severity, file, evidence and line. `.github/workflows/ai-code-review.yml` runs
+`app/github_review.py` on a self-hosted runner. The script fetches the diff from GitHub, calls the endpoint and
+keeps one comment per pull request up to date. Details are in `docs/code_review.md`.
+
 ## Storage
 
 There is no database. State is kept in JSON files under `data/`: conversation history, long-term memory, user profile, invariants, token usage, digest tasks and results, pipeline output and local-chat conversations. Each storage module treats a missing or broken file as empty rather than failing.

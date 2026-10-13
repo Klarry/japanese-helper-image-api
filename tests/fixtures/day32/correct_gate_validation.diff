@@ -1,0 +1,27 @@
+diff --git a/app/services/local_chat_guard.py b/app/services/local_chat_guard.py
+--- a/app/services/local_chat_guard.py
++++ b/app/services/local_chat_guard.py
+@@ -229,6 +229,9 @@
+     """
+ 
+     def __init__(self, limit: int) -> None:
++        if limit < 1:
++            raise ValueError("a concurrency gate needs at least one slot")
++
+         self._limit = limit
+         self.active = 0
+ 
+diff --git a/tests/test_day30_service.py b/tests/test_day30_service.py
+--- a/tests/test_day30_service.py
++++ b/tests/test_day30_service.py
+@@ -481,3 +481,10 @@
+ 
+     assert chat().status_code == 429
+     assert client.post("/rag/chat", json={"message": "hi", "provider": "openai"}).status_code == 422
++
++
++def test_a_gate_without_slots_is_refused():
++    with pytest.raises(ValueError):
++        ConcurrencyGate(0)
++
++    assert ConcurrencyGate(1).try_enter() is True

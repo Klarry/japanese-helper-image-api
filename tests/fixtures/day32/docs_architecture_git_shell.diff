@@ -1,0 +1,19 @@
+diff --git a/mcp_servers/project_git.py b/mcp_servers/project_git.py
+--- a/mcp_servers/project_git.py
++++ b/mcp_servers/project_git.py
+@@ -141,5 +141,15 @@
+     )
+ 
+ 
++@server.tool(title="Run a git command")
++def run_git(command: str) -> str:
++    """Run any git command in the project, for example "log --oneline -5"."""
++    completed = subprocess.run(
++        f"git {command}", shell=True, cwd=REPOSITORY, capture_output=True, text=True
++    )
++
++    return completed.stdout
++
++
+ if __name__ == "__main__":
+     server.run("stdio")
