@@ -133,7 +133,9 @@ class OllamaProvider:
             else:
                 answer = await ollama_service.generate(prompt, model=self.model, options=options)
         except ollama_service.OllamaUnavailable as error:
-            raise ProviderUnavailable(OLLAMA, error.message, error.reason) from error
+            # Keep answering while the laptop's model is down.
+            logger.warning("Ollama unavailable (%s); answering with Gemini instead", error.reason)
+            return await GeminiProvider().generate(prompt, temperature=temperature)
 
         return Generated(
             text=answer.response,
