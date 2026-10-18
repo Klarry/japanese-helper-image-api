@@ -1321,6 +1321,28 @@ python -m app.index_documents --corpus support --embeddings local --strategy str
 
 Details: `docs/support_assistant.md`.
 
+## Project file assistant (Day 34)
+
+`POST /project-files/task` takes a goal in words, not file names, and works on the project's files itself:
+
+- `{"task": "Find all usages of SupportAssistant and explain how a request reaches it.", "provider": "ollama"}`;
+- the files are found, searched and read through the new `project-files` MCP server (`mcp_servers/project_files.py`):
+  `search_project_files`, `search_in_files`, `read_project_file`, `write_project_file`, `get_file_diff`;
+- two workflows: where a component or API is used and how a request flows through it (a report), and documentation
+  compared with the code (a review, a proposed file and a unified diff);
+- every flow step and every documentation finding must quote a line that is really there, or it is reported as unverified;
+- reads stay inside the project root, skip secrets, ignored folders and symlinks that lead out; the assistant writes only
+  to `output/` (git-ignored), and a project file changes only through `POST /project-files/apply` with `confirm` and the
+  sha256 the proposal was made against;
+- every run is recorded in `output/runs/<run_id>.json` and can be repeated with `--rerun`.
+
+```
+.venv-mac/bin/python -m app.project_task "<the task>"
+.venv-mac/bin/python -m app.project_task --rerun output/runs/<run_id>.json
+```
+
+Details: `docs/project_files_assistant.md`.
+
 ## Layout
 
 ```
@@ -1349,12 +1371,14 @@ app/github_review.py          GitHub side of the AI code review: read PR, call b
 app/review_diff.py            a manual code review of a local diff (Day 32)
 app/evaluate_day32.py         the code review on five synthetic PRs, scored (Day 32)
 app/evaluate_day33.py         the support assistant on six scenarios (Day 33)
+app/project_task.py           the project file assistant from a terminal: task, --rerun, --apply (Day 34)
 data/support/                 synthetic support users, tickets and evaluation scenarios (Day 33)
 .github/workflows/            ai-code-review.yml - the PR review job (Day 32)
 docs/                         architecture, API reference, guides - indexed for RAG (Day 31)
 data/documents/               the corpus that does not live in this repo (Android sources, PDFs)
 mcp_servers/                  MCP servers, each run as its own subprocess (japanese_learning: Day 16,
                               jlpt_vocab: Days 17-18, japanese_data + processing + storage: Days 19-20,
-                              project_git: Day 31, support_crm: Day 33)
+                              project_git: Day 31, support_crm: Day 33, project_files: Day 34)
+output/                       what the file assistant writes: reports, proposals, patches, run records (Day 34, git-ignored)
 deploy/                       systemd unit
 ```

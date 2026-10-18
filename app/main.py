@@ -12,6 +12,7 @@ from app.api.routes import (
     kanji_word_set,
     local_llm,
     model_comparison,
+    project_files,
     rag_chat,
     support,
     temperature_description,
@@ -50,3 +51,4 @@ app.include_router(rag_chat.router)
 app.include_router(dev_assistant.router)
 app.include_router(code_review.router)
 app.include_router(support.router)
+app.include_router(project_files.router)

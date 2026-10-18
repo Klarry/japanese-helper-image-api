@@ -43,6 +43,7 @@ Japanese Helper has two parts. The Android client is written in Kotlin: ViewMode
 | jlpt-vocab | `mcp_servers/jlpt_vocab.py` | `get_japanese_word_info`, `create_periodic_digest`, `get_latest_digest` |
 | project-git | `mcp_servers/project_git.py` | `get_git_branch` (developer assistant only) |
 | support-crm | `mcp_servers/support_crm.py` | `get_ticket`, `get_user`, `get_user_tickets` (support assistant only) |
+| project-files | `mcp_servers/project_files.py` | `search_project_files`, `search_in_files`, `read_project_file`, `write_project_file`, `get_file_diff` (file assistant only) |
 
 The first four make up the agent's registry. `project-git` is registered with the MCP client (`SERVERS["project-git"]`) but not with the agent: the learning agent has no use for a branch name.
 
@@ -100,6 +101,17 @@ keeps one comment per pull request up to date. Details are in `docs/code_review.
 3. Answers with a support-specific prompt through the named provider. Citations are validated as in `/rag/chat`.
 
 Details are in `docs/support_assistant.md`.
+
+## Project file assistant (`/project-files/task`, Day 34)
+
+`app/services/file_assistant.py` takes a goal in words and chooses the files itself:
+
+1. The model plans: the workflow (usages of a component, or documentation against the code), the subject, the first searches.
+2. The files are searched and read through the `project-files` MCP server. The model asks for more in up to two rounds; agent rules fill the gaps. The model is shown only the read tools.
+3. The model analyses numbered extracts. Every quoted line is checked against the files as read.
+4. The report, or the proposed documentation and its diff, is written to `output/`. A project file changes only through `/project-files/apply`, with confirmation and the expected sha256.
+
+The rules for paths, secrets, symlinks, limits and writes are in `app/services/project_files.py`. Details are in `docs/project_files_assistant.md`.
 
 ## Storage
 

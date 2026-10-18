@@ -54,6 +54,11 @@ _PASSED_THROUGH = (
     "DIGEST_STORE_FILE_PATH",
     "PIPELINE_DIR_PATH",
     "SUPPORT_DATA_DIR",
+    "PROJECT_FILES_ROOT",
+    "PROJECT_FILES_OUTPUT_DIR",
+    "PROJECT_FILES_EXCLUDE",
+    "PROJECT_FILES_MAX_FILE_BYTES",
+    "PROJECT_FILES_MAX_RESULTS",
     "HTTPS_PROXY",
     "HTTP_PROXY",
     "NO_PROXY",
@@ -169,6 +174,12 @@ def support_crm_server_parameters() -> StdioServerParameters:
     return module_server_parameters("mcp_servers.support_crm")
 
 
+def project_files_server_parameters() -> StdioServerParameters:
+    """Day 34: the project's files - find, search, read, write to the output
+    folder, diff - for the file assistant. Registered here, like project-git."""
+    return module_server_parameters("mcp_servers.project_files")
+
+
 # Every server this project can start, by the name it answers to. The agent
 # reaches them through app/services/mcp_registry.py; this map is also what
 # the CLI below takes for --server.
@@ -180,6 +191,7 @@ SERVERS = {
     "storage": storage_server_parameters,
     "project-git": project_git_server_parameters,
     "support-crm": support_crm_server_parameters,
+    "project-files": project_files_server_parameters,
 }
 
 
@@ -255,7 +267,7 @@ async def call_server_tool(
     is an answer about the data, the second is that there was no answer.
     """
     async with _connected(server or jlpt_vocab_server_parameters()) as (session, _):
-        logger.info("MCP: call_tool %s(%s)", name, json.dumps(arguments, ensure_ascii=False))
+        logger.info("MCP: call_tool %s(%s)", name, json.dumps(_loggable(arguments), ensure_ascii=False)[:300])
         result = await session.call_tool(name, arguments)
 
     if result.is_error:
@@ -264,9 +276,20 @@ async def call_server_tool(
         return McpToolCallResult(name=name, arguments=arguments, ok=False, error=message)
 
     data: dict[str, Any] | str | None = result.structured_content or _text_of(result)
-    logger.info("MCP: %s returned %s", name, json.dumps(data, ensure_ascii=False)[:300])
+    logger.info("MCP: %s returned %s", name, json.dumps(_loggable(data), ensure_ascii=False)[:300])
 
     return McpToolCallResult(name=name, arguments=arguments, ok=True, data=data)
+
+
+def _loggable(value):
+    """What a log line may show of arguments or a result: long text - a
+    file's content, a diff (Day 34) - becomes its size, so a log never holds
+    a file."""
+    if isinstance(value, dict):
+        return {key: f"<{len(item)} characters>" if isinstance(item, str) and len(item) > 120 else item
+                for key, item in value.items()}
+
+    return value
 
 
 async def _list_all_tools(session: ClientSession) -> list[types.Tool]:

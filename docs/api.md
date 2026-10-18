@@ -3,7 +3,7 @@
 Generated from the FastAPI app's OpenAPI schema by `python -m app.export_api_docs`.
 Do not edit by hand - change the code and regenerate.
 
-42 endpoints. Interactive version: `/docs` on a running server.
+44 endpoints. Interactive version: `/docs` on a running server.
 
 ## /agent
 
@@ -570,6 +570,59 @@ Request body: `ModelComparisonRequest`
 Response 200: `ModelComparisonResponse`
 - `prompt`: string (required)
 - `results`: list[ModelComparisonResult] (required)
+
+## /project-files
+
+### POST /project-files/task
+
+Carry out a task on the project's files: find usages of a component or API and explain the flow, or compare documentation with the code and propose a patch. The assistant chooses the files.
+
+Request body: `ProjectTaskRequest`
+- `task`: string (required)
+- `provider`: string (optional)
+
+Response 200: `ProjectTaskResponse`
+- `task`: string (required)
+- `status`: string (required)
+- `workflow`: string (required)
+- `subject`: string (required)
+- `summary`: string (required)
+- `provider`: string (required)
+- `model`: string (required)
+- `run_id`: string (required)
+- `plan`: object (optional)
+- `files_inspected`: list[FileInspected] (optional)
+- `artifacts`: list[TaskArtifact] (optional)
+- `diffs`: list[ProposedDiff] (optional)
+- `tool_calls`: list[TaskToolCall] (optional)
+- `model_calls`: list[TaskModelCall] (optional)
+- `findings`: object (optional)
+- `errors`: list[TaskError] (optional)
+- `notes`: list[string] (optional)
+- `limits`: object (optional)
+- `timing`: object (optional)
+- `run_record`: string (optional)
+
+### POST /project-files/apply
+
+Show the change a saved proposal makes; with confirm, make it - only if the file still has the sha256 the proposal was made against.
+
+Request body: `ApplyRequest`
+- `path`: string (required)
+- `proposal`: string (required)
+- `expected_sha256`: string (required)
+- `confirm`: boolean (optional)
+
+Response 200: `ApplyResponse`
+- `path`: string (required)
+- `proposal`: string (required)
+- `applied`: boolean (required)
+- `diff`: string (required)
+- `added`: integer (required)
+- `removed`: integer (required)
+- `base_sha256`: string | null (optional)
+- `sha256`: string | null (optional)
+- `message`: string (required)
 
 ## /rag
 

@@ -27,3 +27,6 @@ data/chat/day25_results.json
 # Evaluation output is not source; the question sets are (Days 28-31).
 data/evaluation/*
 !data/evaluation/*_questions.json
+
+# Day 34: what the project file assistant writes - reports, proposals, run records.
+output/

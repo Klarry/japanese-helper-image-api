@@ -13,6 +13,7 @@ wrong - neither is worth failing a request over.
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,30 @@ def write_json(path: Path, data: dict[str, Any]) -> int:
     os.replace(temporary, path)
 
     return len(payload.encode("utf-8"))
+
+
+def write_bytes(path: Path, payload: bytes, mode: int | None = None) -> int:
+    """Write ``payload`` to ``path``, atomically - the same temporary file and
+    ``os.replace`` as write_json, under a unique temporary name in the same
+    folder so two writers never share one. ``mode`` keeps the permissions of
+    the file being replaced. Day 34."""
+    descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        if mode is not None:
+            os.chmod(temporary, mode)
+
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+    return len(payload)
 
 
 def read_json(path: Path) -> dict[str, Any]:
