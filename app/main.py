@@ -13,6 +13,7 @@ from app.api.routes import (
     local_llm,
     model_comparison,
     rag_chat,
+    support,
     temperature_description,
 )
 from app.core.config import AGENT_DIGEST_SCHEDULER_ENABLED, LOG_LEVEL
@@ -48,3 +49,4 @@ app.include_router(local_llm.router)
 app.include_router(rag_chat.router)
 app.include_router(dev_assistant.router)
 app.include_router(code_review.router)
+app.include_router(support.router)

@@ -14,6 +14,8 @@ data/*
 !data/documents/
 !data/rag/
 !data/chat/
+# Day 33: the synthetic support CRM and its evaluation scenarios are source.
+!data/support/
 # Day 29: the evaluation questions are versioned; results are not.
 !data/evaluation/
 # ...but the results of an evaluation run are output, not source.

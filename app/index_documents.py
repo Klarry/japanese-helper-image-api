@@ -9,6 +9,11 @@ Run it from the project root:
     python -m app.index_documents --strategy structural
     python -m app.index_documents --embeddings local   # no API key needed
 
+Day 33: the support help centre is a corpus of its own, indexed locally:
+
+    python -m app.index_documents --corpus support --embeddings local \
+        --strategy structural --index-dir data/index/support
+
 Each strategy gets its own directory under data/index, and the two are
 compared afterwards in data/index/comparison.json - from what the run
 actually produced, never from anything written down in advance.
@@ -34,7 +39,7 @@ from app.services.chunking import (
 )
 from fastapi import HTTPException
 
-from app.services.document_loader import CORPUS, PROJECT_ROOT, Document, load_documents
+from app.services.document_loader import CORPORA, CORPUS, PROJECT_ROOT, Document, load_documents
 from app.services.embedding_service import EMBEDDING_MODEL, GEMINI, LOCAL, EmbeddingService
 from app.services.vector_index import save_index
 
@@ -162,7 +167,7 @@ async def index_strategy(
     )
 
 
-def comparison(reports: list[StrategyReport], documents: list[Document]) -> dict:
+def comparison(reports: list[StrategyReport], documents: list[Document], roots=CORPUS) -> dict:
     """The two strategies side by side, plus what they were run over."""
     by_strategy = {report.strategy: report.as_dict() for report in reports}
     result = {
@@ -171,7 +176,7 @@ def comparison(reports: list[StrategyReport], documents: list[Document]) -> dict
             "documents": len(documents),
             "total_characters": sum(document.size for document in documents),
             "by_source": _counted(documents),
-            "roots": [root.path for root in CORPUS],
+            "roots": [root.path for root in roots],
         },
         "settings": {
             "fixed_chunk_size": DEFAULT_CHUNK_SIZE,
@@ -232,7 +237,10 @@ def summarise(report: dict) -> None:
 
 async def run(options: argparse.Namespace) -> dict:
     logger.info("Loading documents...")
-    documents = load_documents()
+    corpus = getattr(options, "corpus", "project")  # callers from before Day 33 do not name one
+    roots = CORPORA[corpus]
+    documents = load_documents(roots)
+    logger.info("Corpus: %s (%s)", corpus, ", ".join(root.path for root in roots))
     logger.info("Documents loaded: %d (%d characters)", len(documents), sum(d.size for d in documents))
 
     if not documents:
@@ -254,7 +262,7 @@ async def run(options: argparse.Namespace) -> dict:
         for strategy in wanted
     ]
 
-    report = comparison(reports, documents)
+    report = comparison(reports, documents, roots)
     path = Path(options.index_dir) / COMPARISON_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -272,6 +280,12 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         description="Index the project's documents into a local FAISS index, one per chunking strategy.",
     )
     parser.add_argument("--strategy", choices=("fixed", "structural", "both"), default="both")
+    parser.add_argument(
+        "--corpus",
+        choices=tuple(CORPORA),
+        default="project",
+        help="project: README, docs, code and data/documents; support: the help centre in docs/support (Day 33)",
+    )
     parser.add_argument("--index-dir", default=str(INDEX_DIR))
     parser.add_argument(
         "--embeddings",

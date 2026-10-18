@@ -1302,6 +1302,25 @@ git diff main...HEAD | .venv-mac/bin/python -m app.review_diff         # a manua
 
 Set-up, permissions, API and limitations: `docs/code_review.md`.
 
+## Support assistant (Day 33)
+
+`POST /support/chat` answers a user's question about the app, taking their support ticket into account:
+
+- `{"message": "Почему не работает авторизация?", "ticket_id": "TICKET-1042", "provider": "ollama"}`;
+- the ticket and its user come from the new `support-crm` MCP server (`mcp_servers/support_crm.py`), which reads the
+  synthetic `data/support/*.json`;
+- product answers come from the help centre in `docs/support/`, indexed on its own with local embeddings, so a local
+  support answer never reaches Google;
+- documentation citations are validated, and the verified ticket record is returned separately;
+- a missing ticket is a 404, a ticket without its user is a 409, a down model is a 503 — never a cloud answer.
+
+```
+python -m app.index_documents --corpus support --embeddings local --strategy structural --index-dir data/index/support
+.venv-mac/bin/python -m app.evaluate_day33
+```
+
+Details: `docs/support_assistant.md`.
+
 ## Layout
 
 ```
@@ -1329,11 +1348,13 @@ app/evaluate_day31.py         the /help demo requests, run and checked (Day 31)
 app/github_review.py          GitHub side of the AI code review: read PR, call backend, comment (Day 32)
 app/review_diff.py            a manual code review of a local diff (Day 32)
 app/evaluate_day32.py         the code review on five synthetic PRs, scored (Day 32)
+app/evaluate_day33.py         the support assistant on six scenarios (Day 33)
+data/support/                 synthetic support users, tickets and evaluation scenarios (Day 33)
 .github/workflows/            ai-code-review.yml - the PR review job (Day 32)
 docs/                         architecture, API reference, guides - indexed for RAG (Day 31)
 data/documents/               the corpus that does not live in this repo (Android sources, PDFs)
 mcp_servers/                  MCP servers, each run as its own subprocess (japanese_learning: Day 16,
                               jlpt_vocab: Days 17-18, japanese_data + processing + storage: Days 19-20,
-                              project_git: Day 31)
+                              project_git: Day 31, support_crm: Day 33)
 deploy/                       systemd unit
 ```

@@ -1,0 +1,47 @@
+{
+  "about": "Day 33 evaluation scenarios for the support assistant. 'expect' is checked mechanically by app.evaluate_day33; 'expected_behavior' is what a person reading the answer should find. The answers are written in full to the results so the mechanical checks can be argued with.",
+  "scenarios": [
+    {
+      "id": "auth_after_password_reset",
+      "question": "Почему не работает авторизация?",
+      "ticket_id": "TICKET-1042",
+      "expected_behavior": "Answers in Russian from the ticket and the help centre: the user used to sign in with Google, so a password reset does not change how they sign in - use «Войти через Google». Does not offer the password reset or the reinstall as new steps.",
+      "expect": {"http": 200, "status": "answered", "tools": ["get_ticket", "get_user"], "min_citations": 1, "answer_mentions_any": ["Google"]}
+    },
+    {
+      "id": "image_generation_failure",
+      "question": "Why are my pictures not generated?",
+      "ticket_id": "TICKET-1043",
+      "expected_behavior": "Answers in English for a free-plan user: the free plan allows 20 pictures a day (resets at 00:00 Moscow time) and the status page shows generation problems; the restart already tried is not offered again as a fix.",
+      "expect": {"http": 200, "status": "answered", "tools": ["get_ticket", "get_user"], "min_citations": 1, "answer_mentions_any": ["20", "limit", "status"]}
+    },
+    {
+      "id": "server_availability",
+      "question": "Сервер сейчас работает? Приложение пишет, что он недоступен.",
+      "ticket_id": "TICKET-1044",
+      "expected_behavior": "Does not claim to know whether the server is up right now. Uses the ticket's app version 2.2.0 and the documented rule that versions below 2.3.0 always show «Сервер недоступен»: update the app; mentions the status page.",
+      "expect": {"http": 200, "status": "answered", "tools": ["get_ticket", "get_user"], "min_citations": 1, "answer_mentions_any": ["2.3.0", "обнов"]}
+    },
+    {
+      "id": "missing_ticket",
+      "question": "Почему не работает авторизация?",
+      "ticket_id": "TICKET-9999",
+      "expected_behavior": "404 ticket_not_found. No model is asked, nothing about the ticket is invented.",
+      "expect": {"http": 404, "error": "ticket_not_found", "tools": ["get_ticket"]}
+    },
+    {
+      "id": "insufficient_documentation",
+      "question": "Как экспортировать мои слова в Anki?",
+      "ticket_id": "TICKET-1045",
+      "expected_behavior": "The help centre says nothing about Anki or export. The answer says the documentation does not describe it, does not invent an export feature, and asks a clarifying question or offers to pass the request on.",
+      "expect": {"http": 200, "status": "insufficient_documentation", "tools": ["get_ticket", "get_user"], "max_citations": 0}
+    },
+    {
+      "id": "ticket_of_unknown_user",
+      "question": "Почему не приходит письмо?",
+      "ticket_id": "TICKET-1047",
+      "expected_behavior": "409 ticket_user_not_found: the ticket's user is not in the CRM, so the ticket cannot be verified and is not used.",
+      "expect": {"http": 409, "error": "ticket_user_not_found", "tools": ["get_ticket", "get_user"]}
+    }
+  ]
+}

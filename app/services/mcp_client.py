@@ -53,6 +53,7 @@ _PASSED_THROUGH = (
     "DIGEST_TASKS_FILE_PATH",
     "DIGEST_STORE_FILE_PATH",
     "PIPELINE_DIR_PATH",
+    "SUPPORT_DATA_DIR",
     "HTTPS_PROXY",
     "HTTP_PROXY",
     "NO_PROXY",
@@ -162,6 +163,12 @@ def project_git_server_parameters() -> StdioServerParameters:
     return module_server_parameters("mcp_servers.project_git")
 
 
+def support_crm_server_parameters() -> StdioServerParameters:
+    """Day 33: the support desk's users and tickets, for the support
+    assistant. Like project-git, registered here and not with the agent."""
+    return module_server_parameters("mcp_servers.support_crm")
+
+
 # Every server this project can start, by the name it answers to. The agent
 # reaches them through app/services/mcp_registry.py; this map is also what
 # the CLI below takes for --server.
@@ -172,6 +179,7 @@ SERVERS = {
     "processing": processing_server_parameters,
     "storage": storage_server_parameters,
     "project-git": project_git_server_parameters,
+    "support-crm": support_crm_server_parameters,
 }
 
 

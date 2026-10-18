@@ -3,7 +3,7 @@
 Generated from the FastAPI app's OpenAPI schema by `python -m app.export_api_docs`.
 Do not edit by hand - change the code and regenerate.
 
-41 endpoints. Interactive version: `/docs` on a running server.
+42 endpoints. Interactive version: `/docs` on a running server.
 
 ## /agent
 
@@ -594,6 +594,33 @@ Response 200: `RagChatResponse`
 - `best_relevance`: number (optional)
 - `answer_threshold`: number (optional)
 - `timing`: RagChatTiming (required)
+
+## /support
+
+### POST /support/chat
+
+Answer a user's question about the product, with their ticket (via MCP) and the help centre (via RAG) as context.
+
+Request body: `SupportChatRequest`
+- `message`: string (required)
+- `ticket_id`: string (required)
+- `provider`: string (optional)
+
+Response 200: `SupportChatResponse`
+- `request_id`: string (required)
+- `answer`: string (required)
+- `ticket_id`: string (required)
+- `status`: string (required)
+- `sources`: list[RagChatSource] (optional)
+- `citations`: list[RagChatCitation] (optional)
+- `rejected_citations`: integer (optional)
+- `ticket`: SupportTicketContext (required)
+- `ticket_facts_used`: list[string] (optional)
+- `tools_used`: list[SupportToolUse] (optional)
+- `provider`: string (required)
+- `model`: string (required)
+- `retrieval`: object (optional)
+- `timing`: object (optional)
 
 ## /temperature-description
 

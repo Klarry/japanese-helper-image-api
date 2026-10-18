@@ -1,0 +1,84 @@
+{
+  "about": "Synthetic support tickets for the Day 33 demo. Each ticket belongs to exactly one user (user_id). TICKET-1047 points at a user that does not exist on purpose - the assistant must refuse to use it rather than guess.",
+  "tickets": [
+    {
+      "ticket_id": "TICKET-1042",
+      "user_id": "USER-501",
+      "status": "open",
+      "category": "authentication",
+      "subject": "Не могу войти после сброса пароля",
+      "description": "После сброса пароля приложение пишет «Неверный email или пароль». Письмо со ссылкой пришло, новый пароль я задала. Раньше я входила через Google.",
+      "platform": "android",
+      "app_version": "2.3.1",
+      "previous_attempts": [
+        "Сбросила пароль по ссылке из письма",
+        "Переустановила приложение"
+      ],
+      "created_at": "2026-10-17T09:12:00+03:00"
+    },
+    {
+      "ticket_id": "TICKET-1043",
+      "user_id": "USER-502",
+      "status": "open",
+      "category": "image_generation",
+      "subject": "Pictures are not generated",
+      "description": "Tapping Create pic shows a spinner and then 'Image generation failed'. It happens for every word since this morning.",
+      "platform": "android",
+      "app_version": "2.3.1",
+      "previous_attempts": [
+        "Restarted the app"
+      ],
+      "created_at": "2026-10-17T11:40:00+03:00"
+    },
+    {
+      "ticket_id": "TICKET-1044",
+      "user_id": "USER-503",
+      "status": "open",
+      "category": "availability",
+      "subject": "Приложение пишет, что сервер недоступен",
+      "description": "На всех экранах сообщение «Сервер недоступен». Wi-Fi работает, другие приложения открываются.",
+      "platform": "android",
+      "app_version": "2.2.0",
+      "previous_attempts": [],
+      "created_at": "2026-10-18T08:05:00+03:00"
+    },
+    {
+      "ticket_id": "TICKET-1045",
+      "user_id": "USER-504",
+      "status": "pending",
+      "category": "export",
+      "subject": "Экспорт слов в Anki",
+      "description": "Хочу перенести свои слова в Anki. Не нашла такой функции.",
+      "platform": "ios",
+      "app_version": "2.3.1",
+      "previous_attempts": [],
+      "created_at": "2026-10-18T10:30:00+03:00"
+    },
+    {
+      "ticket_id": "TICKET-1046",
+      "user_id": "USER-501",
+      "status": "resolved",
+      "category": "local_model",
+      "subject": "Локальная модель не отвечает",
+      "description": "Переключилась на Local LLM, ответы не приходят.",
+      "platform": "android",
+      "app_version": "2.3.0",
+      "previous_attempts": [
+        "Запустила ollama serve"
+      ],
+      "created_at": "2026-10-10T19:20:00+03:00"
+    },
+    {
+      "ticket_id": "TICKET-1047",
+      "user_id": "USER-599",
+      "status": "open",
+      "category": "authentication",
+      "subject": "Не приходит письмо для сброса пароля",
+      "description": "Нажимаю «Забыли пароль?», письмо не приходит.",
+      "platform": "android",
+      "app_version": "2.3.1",
+      "previous_attempts": [],
+      "created_at": "2026-10-18T12:00:00+03:00"
+    }
+  ]
+}

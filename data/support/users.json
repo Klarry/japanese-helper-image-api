@@ -1,0 +1,9 @@
+{
+  "about": "Synthetic users for the Day 33 support assistant demo. No real people, no credentials, no payment data: only what support needs to answer - the language to answer in and the plan.",
+  "users": [
+    {"user_id": "USER-501", "language": "ru", "subscription": "premium"},
+    {"user_id": "USER-502", "language": "en", "subscription": "free"},
+    {"user_id": "USER-503", "language": "ru", "subscription": "free"},
+    {"user_id": "USER-504", "language": "ru", "subscription": "premium"}
+  ]
+}

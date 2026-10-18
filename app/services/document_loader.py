@@ -78,6 +78,14 @@ CORPUS: tuple[CorpusRoot, ...] = (
     CorpusRoot("documents", "data/documents"),
 )
 
+# Day 33: the product help centre - FAQ, troubleshooting, product guide - for
+# the support assistant. Indexed on its own (python -m app.index_documents
+# --corpus support), into its own directory, so that support answers are
+# drawn from what a user is meant to read and nothing else.
+SUPPORT_CORPUS: tuple[CorpusRoot, ...] = (CorpusRoot("support", "docs/support", (".md",)),)
+
+CORPORA: dict[str, tuple[CorpusRoot, ...]] = {"project": CORPUS, "support": SUPPORT_CORPUS}
+
 
 def load_documents(
     roots: tuple[CorpusRoot, ...] = CORPUS,

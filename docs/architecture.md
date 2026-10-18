@@ -42,6 +42,7 @@ Japanese Helper has two parts. The Android client is written in Kotlin: ViewMode
 | storage | `mcp_servers/storage.py` | `save_to_file` |
 | jlpt-vocab | `mcp_servers/jlpt_vocab.py` | `get_japanese_word_info`, `create_periodic_digest`, `get_latest_digest` |
 | project-git | `mcp_servers/project_git.py` | `get_git_branch` (developer assistant only) |
+| support-crm | `mcp_servers/support_crm.py` | `get_ticket`, `get_user`, `get_user_tickets` (support assistant only) |
 
 The first four make up the agent's registry. `project-git` is registered with the MCP client (`SERVERS["project-git"]`) but not with the agent: the learning agent has no use for a branch name.
 
@@ -89,6 +90,16 @@ through the RAG pipeline above with the query rewrite turned off. Findings are v
 category, severity, file, evidence and line. `.github/workflows/ai-code-review.yml` runs
 `app/github_review.py` on a self-hosted runner. The script fetches the diff from GitHub, calls the endpoint and
 keeps one comment per pull request up to date. Details are in `docs/code_review.md`.
+
+## Support assistant (`/support/chat`, Day 33)
+
+`app/services/support_assistant.py` works in three steps:
+
+1. Reads the ticket and its user through the `support-crm` MCP server. The user is the one the ticket names, verified to match.
+2. Searches the help centre (`docs/support`, a separate index with local embeddings) through the RAG pipeline above.
+3. Answers with a support-specific prompt through the named provider. Citations are validated as in `/rag/chat`.
+
+Details are in `docs/support_assistant.md`.
 
 ## Storage
 
