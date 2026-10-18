@@ -205,6 +205,7 @@ def test_the_workflow_runs_trusted_code_with_minimal_permissions():
     assert "contents: read" in workflow and "pull-requests: write" in workflow
     assert "write-all" not in workflow and "issues: write" not in workflow
     assert "python3 -m app.github_review" in workflow
+    assert 'shell: bash --noprofile --norc -eo pipefail "{0}"' in workflow  # a runner path with spaces
 
 
 def test_a_busy_backend_is_waited_for_and_other_refusals_are_not():

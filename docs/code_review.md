@@ -133,6 +133,8 @@ Rejections and adjustments are listed in `validation`. If the reply is not JSON,
 - **One review at a time:** runs for the same PR queue instead of cancelling each other. A run that finds the backend busy with another PR waits and retries every 20 s, for up to 15 minutes.
 - **One comment per PR:** the comment carries a hidden marker. A new push updates the comment written by `github-actions[bot]` with that marker. A marker pasted by anyone else is ignored. Mentions and HTML comments in model output are neutralised.
 
+The step's shell quotes the script path (`bash … "{0}"`): with the default `shell: bash` the runner passes the path unquoted, and a runner installed under a folder whose name contains a space fails before the script starts (`bash: …/AI: No such file or directory`).
+
 Setting up the runner (once): GitHub repository → Settings → Actions → Runners → New self-hosted runner → macOS. Run the `config.sh` and `run.sh` commands it shows, in a folder outside the project. Do not use a self-hosted runner for a public repository that accepts pull requests from strangers.
 
 `pull_request_target` reads the workflow from the default branch, so the workflow must be on `main` before the first pull request.

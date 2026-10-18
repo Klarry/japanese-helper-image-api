@@ -45,6 +45,11 @@ jobs:
           persist-credentials: false
 
       - name: Review the pull request and comment
+        # The script path is quoted: the runner's default "bash ... {0}" passes
+        # it unquoted, and a runner installed under a folder with a space in
+        # its name ("AI Challenge") made bash look for ".../AI" (first run,
+        # 2026-10-13).
+        shell: bash --noprofile --norc -eo pipefail "{0}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CODE_REVIEW_URL: ${{ vars.CODE_REVIEW_URL || 'http://127.0.0.1:8000' }}
