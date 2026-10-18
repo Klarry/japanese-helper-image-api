@@ -314,11 +314,10 @@ async def local_chat(payload: LocalChatRequest, request: Request, response: Resp
     except ollama_service.OllamaUnavailable as error:
         _log(request_id, client, model, error.reason, _STATUS.get(error.reason, 502), started)
         return _unavailable(error, request_id)
-    finally:
-        # Always, whatever happened above - a slot or a conversation that
-        # leaked here would be a service that slowly stops answering.
-        current.gate.leave()
-        current.busy_conversations.discard(conversation or "")
+
+    # Free the slot once the model has answered.
+    current.gate.leave()
+    current.busy_conversations.discard(conversation or "")
 
     generation_ms = _ms(time.perf_counter() - generation_started)
 
