@@ -41,7 +41,7 @@ Japanese Helper has two parts. The Android client is written in Kotlin: ViewMode
 | processing | `mcp_servers/processing.py` | `summarize` |
 | storage | `mcp_servers/storage.py` | `save_to_file` |
 | jlpt-vocab | `mcp_servers/jlpt_vocab.py` | `get_japanese_word_info`, `create_periodic_digest`, `get_latest_digest` |
-| project-git | `mcp_servers/project_git.py` | `get_git_branch` (developer assistant only) |
+| project-git | `mcp_servers/project_git.py` | `get_git_branch` (developer assistant), `get_git_status`, `resolve_git_ref`, `get_git_changes`, `get_git_diff`, `get_recent_commits` (release assistant; read-only) |
 | support-crm | `mcp_servers/support_crm.py` | `get_ticket`, `get_user`, `get_user_tickets` (support assistant only) |
 | project-files | `mcp_servers/project_files.py` | `search_project_files`, `search_in_files`, `read_project_file`, `write_project_file`, `get_file_diff` (file assistant only) |
 
@@ -112,6 +112,19 @@ Details are in `docs/support_assistant.md`.
 4. The report, or the proposed documentation and its diff, is written to `output/`. A project file changes only through `/project-files/apply`, with confirmation and the expected sha256.
 
 The rules for paths, secrets, symlinks, limits and writes are in `app/services/project_files.py`. Details are in `docs/project_files_assistant.md`.
+
+## AI Release Assistant (`/release/prepare`, Day 35)
+
+`app/services/release_assistant.py` prepares a release draft and changes nothing in the repository it reads:
+
+1. Inspects the repository through `project-git` (branch, status, refs, changes) and `project-files` (version files, documentation list), and reads the RAG index metadata.
+2. Collects the change set for `base...HEAD` (or the working tree when no base is given), separating committed, uncommitted and untracked files. `release_safety.py` withholds secrets, generated and binary files and credential-looking diffs before anything reaches a prompt.
+3. Reviews it with the Day 32 `CodeReviewer` (RAG context included) in up to three batches. Findings must point at a changed file and a changed line.
+4. Searches the documentation for changed paths and names, runs the checks from `data/release/release_config.json` only if asked, and computes a rule-based readiness verdict.
+5. Drafts the changelog and release notes with a release-specific prompt (`release_draft.py`); entries without evidence in the diff or the commit subjects are dropped.
+6. Saves the report, changelog, release notes, findings and `run.json` to `output/release/<run_id>/` through `project-files`.
+
+The local model is never replaced by Gemini. Details are in `docs/release_assistant.md`.
 
 ## Storage
 

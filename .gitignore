@@ -16,6 +16,8 @@ data/*
 !data/chat/
 # Day 33: the synthetic support CRM and its evaluation scenarios are source.
 !data/support/
+# Day 35: which repositories and checks the release assistant may use is source.
+!data/release/
 # Day 29: the evaluation questions are versioned; results are not.
 !data/evaluation/
 # ...but the results of an evaluation run are output, not source.

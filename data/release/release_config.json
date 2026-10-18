@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "comment": "Day 35: what the AI Release Assistant may look at and run. Edited by a person, never by the model or by the repository being released. A check is only ever run on request (--run-checks / run_checks), as the argument list below, without a shell, with the environment listed in app/services/release_checks.py.",
+  "output_dir": "output/release",
+  "repositories": {
+    "backend": {
+      "path": ".",
+      "title": "Japanese Helper backend (FastAPI)",
+      "documentation": ["README.md", "docs/*.md"],
+      "user_facing": [],
+      "version_files": []
+    },
+    "android": {
+      "path": "../japaneseHelper",
+      "title": "Japanese Helper (Android app)",
+      "documentation": ["README.md"],
+      "user_facing": ["app/src/main/**"],
+      "version_files": ["app/build.gradle.kts"]
+    }
+  },
+  "checks": [
+    {
+      "id": "backend-compile",
+      "repository": "backend",
+      "title": "Backend: every Python module compiles",
+      "argv": ["{python}", "-m", "compileall", "-q", "app", "mcp_servers"],
+      "documented_in": "standard library (python -m compileall)",
+      "timeout_seconds": 300,
+      "requires": ["app"]
+    },
+    {
+      "id": "backend-tests",
+      "repository": "backend",
+      "title": "Backend: pytest suite without the integration tests",
+      "argv": ["{python}", "-m", "pytest", "-q", "-m", "not integration", "-p", "no:cacheprovider"],
+      "documented_in": "README.md (Tests: pytest, 'pytest -m integration' is the part that needs Ollama), docs/*.md",
+      "timeout_seconds": 1800,
+      "requires": ["pytest.ini"]
+    },
+    {
+      "id": "android-unit-tests",
+      "repository": "android",
+      "title": "Android: JVM unit tests (debug variant)",
+      "argv": ["./gradlew", "testDebugUnitTest", "--console=plain"],
+      "documented_in": "Gradle wrapper in the repository root (the README does not document a test command)",
+      "timeout_seconds": 2400,
+      "requires": ["gradlew"]
+    },
+    {
+      "id": "android-detekt",
+      "repository": "android",
+      "title": "Android: detekt static analysis",
+      "argv": ["./gradlew", "detekt", "--console=plain"],
+      "documented_in": "detekt plugin in app/build.gradle.kts",
+      "timeout_seconds": 1800,
+      "requires": ["gradlew"]
+    }
+  ]
+}

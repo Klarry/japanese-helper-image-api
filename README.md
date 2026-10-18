@@ -1343,6 +1343,27 @@ Details: `docs/support_assistant.md`.
 
 Details: `docs/project_files_assistant.md`.
 
+## AI Release Assistant (Day 35)
+
+The task: preparing a release draft of Japanese Helper. `POST /release/prepare` (or `python -m app.release_assistant`) takes a base reference and a provider and, without touching the repository:
+
+- inspects the Git state through the `project-git` MCP server (new read-only tools: `get_git_status`, `resolve_git_ref`, `get_git_changes`, `get_git_diff`, `get_recent_commits`) and tells committed, uncommitted and untracked changes apart;
+- reviews the change set with the Day 32 `CodeReviewer`, with RAG context from the existing indexes;
+- looks for documents that mention changed files (a hint for a person, not a verdict);
+- runs the configured checks (`data/release/release_config.json`) only when asked, with no shell, and reports what really ran and how it ended;
+- drafts `CHANGELOG.md` and `release_notes.md` from entries that a changed line or a commit subject supports;
+- saves `release_report.md`, `CHANGELOG.md`, `release_notes.md`, `review_findings.json` and `run.json` in `output/release/<run_id>/`.
+
+It never commits, stashes, resets, tags, builds a release or publishes. Secret files, generated and binary files and credential-looking diffs never reach a prompt. With `ollama` there is no fallback to Gemini: if the local model is down the run is recorded as `failed` (HTTP 503, exit code 3).
+
+```
+.venv-mac/bin/python -m app.release_assistant --base-ref main --provider ollama
+.venv-mac/bin/python -m app.release_assistant --base-ref v1.0 --run-checks backend-compile
+curl -s -X POST http://127.0.0.1:8000/release/prepare -H 'Content-Type: application/json' -d '{"base_ref": "main", "provider": "ollama"}'
+```
+
+Details: `docs/release_assistant.md`.
+
 ## Layout
 
 ```
@@ -1372,13 +1393,15 @@ app/review_diff.py            a manual code review of a local diff (Day 32)
 app/evaluate_day32.py         the code review on five synthetic PRs, scored (Day 32)
 app/evaluate_day33.py         the support assistant on six scenarios (Day 33)
 app/project_task.py           the project file assistant from a terminal: task, --rerun, --apply (Day 34)
+app/release_assistant.py       the AI Release Assistant from a terminal: release draft, report, changelog (Day 35)
 data/support/                 synthetic support users, tickets and evaluation scenarios (Day 33)
+data/release/                 which repositories and checks the release assistant may use (Day 35)
 .github/workflows/            ai-code-review.yml - the PR review job (Day 32)
 docs/                         architecture, API reference, guides - indexed for RAG (Day 31)
 data/documents/               the corpus that does not live in this repo (Android sources, PDFs)
 mcp_servers/                  MCP servers, each run as its own subprocess (japanese_learning: Day 16,
                               jlpt_vocab: Days 17-18, japanese_data + processing + storage: Days 19-20,
-                              project_git: Day 31, support_crm: Day 33, project_files: Day 34)
-output/                       what the file assistant writes: reports, proposals, patches, run records (Day 34, git-ignored)
+                              project_git: Day 31 + Day 35, support_crm: Day 33, project_files: Day 34)
+output/                       what the assistants write: reports, proposals, patches, run records (Day 34), release drafts in output/release/ (Day 35); git-ignored
 deploy/                       systemd unit
 ```

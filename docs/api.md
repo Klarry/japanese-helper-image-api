@@ -3,7 +3,7 @@
 Generated from the FastAPI app's OpenAPI schema by `python -m app.export_api_docs`.
 Do not edit by hand - change the code and regenerate.
 
-44 endpoints. Interactive version: `/docs` on a running server.
+45 endpoints. Interactive version: `/docs` on a running server.
 
 ## /agent
 
@@ -647,6 +647,50 @@ Response 200: `RagChatResponse`
 - `best_relevance`: number (optional)
 - `answer_threshold`: number (optional)
 - `timing`: RagChatTiming (required)
+
+## /release
+
+### POST /release/prepare
+
+Analyze the repository's Git changes, review them, compare them with the documentation and draft a changelog, release notes and a release report. Read-only: nothing is committed, built or published.
+
+Request body: `ReleasePrepareRequest`
+- `base_ref`: string (optional)
+- `provider`: string (optional)
+- `repository`: string (optional)
+- `include_uncommitted`: boolean (optional)
+- `run_checks`: boolean (optional)
+- `checks`: list[string] (optional)
+
+Response 200: `ReleaseResponse`
+- `run_id`: string (required)
+- `status`: string (required)
+- `started_at`: string (required)
+- `finished_at`: string (required)
+- `seconds`: number (required)
+- `request`: object (required)
+- `readiness`: Readiness (required)
+- `repository`: object (required)
+- `git_status_at_start`: object (required)
+- `scope`: object (required)
+- `files`: list[FileChange] (required)
+- `other_changes`: object (required)
+- `commits`: object (required)
+- `inspection`: object (required)
+- `documentation`: object (required)
+- `review`: object (required)
+- `findings`: list[Finding] (required)
+- `checks`: list[CheckOutcome] (required)
+- `tree_after_checks`: object (required)
+- `draft`: object (required)
+- `artifacts`: list[Artifact] (required)
+- `output_dir`: string (required)
+- `run_dir`: string (required)
+- `limitations`: list[string] (required)
+- `unresolved`: list[string] (required)
+- `errors`: list[object] (required)
+- `tool_calls`: list[object] (required)
+- `llm`: object (required)
 
 ## /support
 

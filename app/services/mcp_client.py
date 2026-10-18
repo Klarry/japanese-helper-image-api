@@ -59,6 +59,7 @@ _PASSED_THROUGH = (
     "PROJECT_FILES_EXCLUDE",
     "PROJECT_FILES_MAX_FILE_BYTES",
     "PROJECT_FILES_MAX_RESULTS",
+    "PROJECT_GIT_ROOT",
     "HTTPS_PROXY",
     "HTTP_PROXY",
     "NO_PROXY",
@@ -129,15 +130,18 @@ def local_server_parameters() -> StdioServerParameters:
     )
 
 
-def module_server_parameters(module: str) -> StdioServerParameters:
+def module_server_parameters(module: str, env: dict[str, str] | None = None) -> StdioServerParameters:
     """One of this project's servers, run as a module from the project root
     so it can import the backend's own services, with the part of the
-    environment it needs passed through."""
+    environment it needs passed through. ``env`` adds to that - and wins over
+    it - for a caller that has to start the server for a particular folder
+    (Day 35: the release assistant's repository), which is how a folder
+    reaches a server at all: no tool takes one."""
     return StdioServerParameters(
         command=sys.executable,
         args=["-m", module],
         cwd=str(_PROJECT_ROOT),
-        env={name: os.environ[name] for name in _PASSED_THROUGH if name in os.environ},
+        env={**{name: os.environ[name] for name in _PASSED_THROUGH if name in os.environ}, **(env or {})},
     )
 
 
@@ -161,11 +165,14 @@ def storage_server_parameters() -> StdioServerParameters:
     return module_server_parameters("mcp_servers.storage")
 
 
-def project_git_server_parameters() -> StdioServerParameters:
+def project_git_server_parameters(root: str | Path | None = None) -> StdioServerParameters:
     """Day 31: the project's own Git state, for the developer assistant.
     Not part of the agent's chain - the Japanese-learning agent has no use
-    for a branch name - so it is registered here, not in mcp_registry."""
-    return module_server_parameters("mcp_servers.project_git")
+    for a branch name - so it is registered here, not in mcp_registry.
+
+    Day 35: ``root`` starts the server for another repository (the release
+    assistant's target); without it the server answers about this project."""
+    return module_server_parameters("mcp_servers.project_git", {"PROJECT_GIT_ROOT": str(root)} if root else None)
 
 
 def support_crm_server_parameters() -> StdioServerParameters:
@@ -174,10 +181,23 @@ def support_crm_server_parameters() -> StdioServerParameters:
     return module_server_parameters("mcp_servers.support_crm")
 
 
-def project_files_server_parameters() -> StdioServerParameters:
+def project_files_server_parameters(root: str | Path | None = None, output_dir: str | None = None) -> StdioServerParameters:
     """Day 34: the project's files - find, search, read, write to the output
-    folder, diff - for the file assistant. Registered here, like project-git."""
-    return module_server_parameters("mcp_servers.project_files")
+    folder, diff - for the file assistant. Registered here, like project-git.
+
+    Day 35: ``root`` and ``output_dir`` start the server for another folder
+    and another writable output folder; the release assistant reads the
+    repository it is preparing a release of and writes only into its own
+    release folder. Without them nothing changes."""
+    chosen = {}
+
+    if root:
+        chosen["PROJECT_FILES_ROOT"] = str(root)
+
+    if output_dir:
+        chosen["PROJECT_FILES_OUTPUT_DIR"] = output_dir
+
+    return module_server_parameters("mcp_servers.project_files", chosen or None)
 
 
 # Every server this project can start, by the name it answers to. The agent

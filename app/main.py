@@ -14,6 +14,7 @@ from app.api.routes import (
     model_comparison,
     project_files,
     rag_chat,
+    release,
     support,
     temperature_description,
 )
@@ -52,3 +53,4 @@ app.include_router(dev_assistant.router)
 app.include_router(code_review.router)
 app.include_router(support.router)
 app.include_router(project_files.router)
+app.include_router(release.router)
